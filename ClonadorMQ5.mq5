@@ -14,7 +14,7 @@
 //--- Inputs
 input string InpCSVFileName = "TradeEvents.txt";  // Nombre del TXT en Common\Files
 input string InpHistFileName = "TradeEvents_historico.txt";  // Archivo histórico
-input int    InpTimerSeconds = 3;                 // Timer en segundos
+input int    InpTimerSeconds = 1;                 // Timer en segundos
 input int    InpSlippagePoints = 30;              // Slippage en puntos
 input bool   InpCuentaFondeo = true;              // Cuenta de fondeo (copia lots)
 input double InpFixedLots = 0.10;                 // Lote fijo si NO es fondeo

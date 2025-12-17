@@ -19,7 +19,7 @@ import MetaTrader5 as mt5
 # ========= CONFIG (equivalentes a Inputs) =========
 CSV_NAME = "TradeEvents.txt"     # en Common\Files
 CSV_HISTORICO = "TradeEvents_historico.txt"  # Archivo TXT histórico de ejecuciones exitosas
-TIMER_SECONDS = 3
+TIMER_SECONDS = 1
 SLIPPAGE_POINTS = 30
 
 CUENTA_FONDEO = True              # True = copia lots del maestro (por defecto)

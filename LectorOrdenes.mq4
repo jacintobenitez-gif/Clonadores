@@ -8,11 +8,14 @@
 //|   v1.2: detecta cambios en SL/TP y escribe eventos MODIFY        |
 //|   v1.3: elimina campos magic y comment, usa FILE_TXT              |
 //|   v1.4: escribe en UTF-8 usando FILE_BIN                          |
+//|   v1.5: cambia OnTick() por OnTimer() para mayor eficiencia       |
 //+------------------------------------------------------------------+
 #property strict
 
 // Nombre del fichero TXT (en carpeta COMMON\Files)
 input string InpCSVFileName = "TradeEvents.txt";
+// Timer en segundos para revisar cambios
+input int    InpTimerSeconds = 1;  // Revisar cada 1 segundo (alineado con clonadores)
 
 // Tamaño máximo de órdenes que vamos a manejar
 #define MAX_ORDERS 500
@@ -223,7 +226,8 @@ void InitCSVIfNeeded()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("Observador_Common v1.4 inicializado. TXT(COMMON) = ", InpCSVFileName);
+   Print("Observador_Common v1.5 inicializado. TXT(COMMON) = ", InpCSVFileName);
+   Print("Timer: ", InpTimerSeconds, " segundos");
 
    g_prevCount   = 0;
    g_initialized = false;
@@ -238,6 +242,9 @@ int OnInit()
    }
 
    InitCSVIfNeeded();
+   
+   // Configurar timer
+   EventSetTimer(InpTimerSeconds);
 
    return(INIT_SUCCEEDED);
 }
@@ -247,13 +254,14 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
    Print("Observador_Common finalizado. reason = ", reason);
 }
 
 //+------------------------------------------------------------------+
-//| OnTick                                                           |
+//| OnTimer                                                          |
 //+------------------------------------------------------------------+
-void OnTick()
+void OnTimer()
 {
    int  curTickets[MAX_ORDERS];
    int  curCount = 0;
