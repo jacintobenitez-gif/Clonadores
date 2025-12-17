@@ -3,15 +3,16 @@
 //|                                  Copyright 2025, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //|   Lee aperturas y cierres y los escribe en Common\Files          |
-//|   Fichero: TradeEvents.csv (compartido por todos los MT4/MT5)    |
+//|   Fichero: TradeEvents.txt (compartido por todos los MT4/MT5)    |
 //|   v1.1: añade columnas SL y TP                                   |
 //|   v1.2: detecta cambios en SL/TP y escribe eventos MODIFY        |
 //|   v1.3: elimina campos magic y comment, usa FILE_TXT              |
+//|   v1.4: escribe en UTF-8 usando FILE_BIN                          |
 //+------------------------------------------------------------------+
 #property strict
 
-// Nombre del fichero CSV (en carpeta COMMON\Files)
-input string InpCSVFileName = "TradeEvents.csv";
+// Nombre del fichero TXT (en carpeta COMMON\Files)
+input string InpCSVFileName = "TradeEvents.txt";
 
 // Tamaño máximo de órdenes que vamos a manejar
 #define MAX_ORDERS 500
@@ -68,8 +69,47 @@ bool DoubleChanged(double val1, double val2)
 }
 
 //+------------------------------------------------------------------+
-//| Escribe una línea en el CSV (apertura, cierre o modificación)    |
-//| v1.3: elimina magic y comment, usa FILE_TXT                      |
+//| Convierte string Unicode (MQL4) a bytes UTF-8                     |
+//+------------------------------------------------------------------+
+void StringToUTF8Bytes(string str, uchar &bytes[])
+{
+   ArrayResize(bytes, 0);
+   int len = StringLen(str);
+   
+   for(int i = 0; i < len; i++)
+   {
+      ushort ch = StringGetCharacter(str, i);
+      
+      // ASCII (0x00-0x7F): 1 byte
+      if(ch < 0x80)
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 1);
+         bytes[size] = (uchar)ch;
+      }
+      // 2 bytes UTF-8: 110xxxxx 10xxxxxx (0x80-0x7FF)
+      else if(ch < 0x800)
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 2);
+         bytes[size] = (uchar)(0xC0 | (ch >> 6));
+         bytes[size + 1] = (uchar)(0x80 | (ch & 0x3F));
+      }
+      // 3 bytes UTF-8: 1110xxxx 10xxxxxx 10xxxxxx (0x800-0xFFFF)
+      else
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 3);
+         bytes[size] = (uchar)(0xE0 | (ch >> 12));
+         bytes[size + 1] = (uchar)(0x80 | ((ch >> 6) & 0x3F));
+         bytes[size + 2] = (uchar)(0x80 | (ch & 0x3F));
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Escribe una línea en el TXT (apertura, cierre o modificación)    |
+//| v1.4: escribe en UTF-8 usando FILE_BIN                           |
 //+------------------------------------------------------------------+
 void AppendEventToCSV(string eventType,
                       int    ticket,
@@ -84,15 +124,14 @@ void AppendEventToCSV(string eventType,
                       datetime closeTime,
                       double profit)
 {
-   // *** IMPORTANTE: Usar FILE_TXT en lugar de FILE_CSV para evitar problemas de codificación ***
-   // READ + WRITE para NO truncar el fichero
+   // Abrir archivo en modo binario para escribir UTF-8
    int handle = FileOpen(InpCSVFileName,
-                         FILE_TXT | FILE_READ | FILE_WRITE | FILE_COMMON |
+                         FILE_BIN | FILE_READ | FILE_WRITE | FILE_COMMON |
                          FILE_SHARE_READ | FILE_SHARE_WRITE);
 
    if(handle == INVALID_HANDLE)
    {
-      Print("Observador_Common: ERROR al abrir CSV '", InpCSVFileName,
+      Print("Observador_Common: ERROR al abrir TXT '", InpCSVFileName,
             "' err=", GetLastError());
       return;
    }
@@ -125,21 +164,29 @@ void AppendEventToCSV(string eventType,
                  sCloseTime + ";" +
                  sProfit;
 
-   // Escribir línea completa (FileWrite con FILE_TXT añade salto de línea automáticamente)
-   FileWrite(handle, line);
+   // Convertir línea a UTF-8 y escribir
+   uchar utf8Bytes[];
+   StringToUTF8Bytes(line, utf8Bytes);
+   
+   // Escribir bytes UTF-8
+   FileWriteArray(handle, utf8Bytes);
+   
+   // Escribir salto de línea UTF-8 (\n = 0x0A)
+   uchar newline[] = {0x0A};
+   FileWriteArray(handle, newline);
 
    FileClose(handle);
 }
 
 //+------------------------------------------------------------------+
-//| Inicializa el CSV (cabecera) en COMMON\Files si no existe        |
-//| v1.3: cabecera sin magic y comment                               |
+//| Inicializa el TXT (cabecera) en COMMON\Files si no existe        |
+//| v1.4: escribe cabecera en UTF-8                                  |
 //+------------------------------------------------------------------+
 void InitCSVIfNeeded()
 {
    // Intentar abrir en lectura en carpeta COMMON
    int hRead = FileOpen(InpCSVFileName,
-                        FILE_TXT | FILE_READ |
+                        FILE_BIN | FILE_READ |
                         FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
    if(hRead != INVALID_HANDLE)
    {
@@ -147,20 +194,26 @@ void InitCSVIfNeeded()
       return; // ya existe
    }
 
-   // No existe: crear y escribir cabecera nueva
+   // No existe: crear y escribir cabecera nueva en UTF-8
    int handle = FileOpen(InpCSVFileName,
-                         FILE_TXT | FILE_WRITE |
+                         FILE_BIN | FILE_WRITE |
                          FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE)
    {
-      Print("Observador_Common: ERROR al crear CSV '", InpCSVFileName,
+      Print("Observador_Common: ERROR al crear TXT '", InpCSVFileName,
             "' err=", GetLastError());
       return;
    }
 
-   // Escribir cabecera manualmente con delimitador ;
+   // Escribir cabecera en UTF-8
    string header = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit";
-   FileWrite(handle, header);
+   uchar utf8Bytes[];
+   StringToUTF8Bytes(header, utf8Bytes);
+   FileWriteArray(handle, utf8Bytes);
+   
+   // Escribir salto de línea UTF-8
+   uchar newline[] = {0x0A};
+   FileWriteArray(handle, newline);
 
    FileClose(handle);
 }
@@ -170,7 +223,7 @@ void InitCSVIfNeeded()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("Observador_Common v1.3 inicializado. CSV(COMMON) = ", InpCSVFileName);
+   Print("Observador_Common v1.4 inicializado. TXT(COMMON) = ", InpCSVFileName);
 
    g_prevCount   = 0;
    g_initialized = false;

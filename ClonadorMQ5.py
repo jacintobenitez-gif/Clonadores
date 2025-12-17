@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Clonador de Órdenes para MetaTrader 5
-Lee TradeEvents.csv desde Common\Files y clona operaciones OPEN/CLOSE/MODIFY
+Lee TradeEvents.txt desde Common\Files y clona operaciones OPEN/CLOSE/MODIFY
 Equivalente funcional a ClonadorOrdenes.mq5 pero ejecutándose como script Python
 """
 
@@ -17,14 +17,16 @@ from datetime import datetime, timedelta
 import MetaTrader5 as mt5
 
 # ========= CONFIG (equivalentes a Inputs) =========
-CSV_NAME = "TradeEvents.csv"     # en Common\Files
-CSV_HISTORICO = "TradeEvents_historico.csv"  # CSV histórico de ejecuciones exitosas
+CSV_NAME = "TradeEvents.txt"     # en Common\Files
+CSV_HISTORICO = "TradeEvents_historico.txt"  # Archivo TXT histórico de ejecuciones exitosas
 TIMER_SECONDS = 3
 SLIPPAGE_POINTS = 30
 
 CUENTA_FONDEO = True              # True = copia lots del maestro (por defecto)
 FIXED_LOTS = 0.10                 # lote fijo si NO es fondeo
 MAGIC = 0
+# Multiplicador de lotaje (se establece al inicio si CUENTA_FONDEO = True)
+LOT_MULTIPLIER = 1.0              # Por defecto 1x, se configura al inicio
 # ================================================
 
 @dataclass
@@ -46,7 +48,7 @@ def f(s: str) -> float:
 
 def compute_slave_lots(symbol: str, master_lots: float) -> float:
     if CUENTA_FONDEO:
-        return float(master_lots)
+        return float(master_lots) * LOT_MULTIPLIER
 
     info = mt5.symbol_info(symbol)
     if info is None:
@@ -406,15 +408,52 @@ def write_csv(path: str, header: str, lines: list[str]):
         raise RuntimeError(f"Error al escribir CSV: {e}")
 
 def main_loop():
+    global LOT_MULTIPLIER
+    
     if not mt5.initialize():
         raise SystemExit(f"MT5 init failed: {mt5.last_error()}")
 
     try:
+        # Si es cuenta de fondeo, pedir al usuario el multiplicador de lotaje
+        if CUENTA_FONDEO:
+            print("=" * 60)
+            print("CONFIGURACIÓN DE MULTIPLICADOR DE LOTAJE")
+            print("=" * 60)
+            print("Seleccione el multiplicador para el lotaje origen:")
+            print("  1. Multiplicar por 1 (lotaje original)")
+            print("  2. Multiplicar por 2 (doble del lotaje)")
+            print("  3. Multiplicar por 3 (triple del lotaje)")
+            print("-" * 60)
+            
+            while True:
+                try:
+                    opcion = input("Ingrese su opción (1, 2 o 3): ").strip()
+                    if opcion == "1":
+                        LOT_MULTIPLIER = 1.0
+                        print(f"✓ Multiplicador configurado: {LOT_MULTIPLIER}x (lotaje original)")
+                        break
+                    elif opcion == "2":
+                        LOT_MULTIPLIER = 2.0
+                        print(f"✓ Multiplicador configurado: {LOT_MULTIPLIER}x (doble del lotaje)")
+                        break
+                    elif opcion == "3":
+                        LOT_MULTIPLIER = 3.0
+                        print(f"✓ Multiplicador configurado: {LOT_MULTIPLIER}x (triple del lotaje)")
+                        break
+                    else:
+                        print("❌ Opción inválida. Por favor ingrese 1, 2 o 3.")
+                except (EOFError, KeyboardInterrupt):
+                    print("\nOperación cancelada.")
+                    raise SystemExit("Configuración cancelada por el usuario")
+            print("-" * 60)
+        
         path = common_files_csv_path(CSV_NAME)
         print(f"ClonadorOrdenes.py iniciado")
         print(f"Leyendo CSV: {path}")
         print(f"Timer: {TIMER_SECONDS} segundos")
         print(f"Cuenta Fondeo: {CUENTA_FONDEO}")
+        if CUENTA_FONDEO:
+            print(f"Multiplicador de lotaje: {LOT_MULTIPLIER}x")
         print(f"Verificación: Solo MT5 (historial + abiertas)")
         print(f"Presiona Ctrl+C para detener")
         print("-" * 60)
