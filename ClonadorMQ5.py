@@ -19,7 +19,7 @@ import MetaTrader5 as mt5
 # ========= CONFIG (equivalentes a Inputs) =========
 CSV_NAME = "TradeEvents.csv"     # en Common\Files
 CSV_HISTORICO = "TradeEvents_historico.txt"  # Archivo TXT histórico de ejecuciones exitosas
-TIMER_SECONDS = 3
+TIMER_SECONDS = 1
 SLIPPAGE_POINTS = 30
 
 CUENTA_FONDEO = True              # True = copia lots del maestro (por defecto)
@@ -146,139 +146,194 @@ def ticket_exists_anywhere(symbol: str, master_ticket: str):
 
 # Función eliminada - ahora usamos ticket_exists_anywhere() directamente
 
-def open_clone(ev: Ev) -> bool:
-    """Ejecuta OPEN (BUY/SELL). Retorna True si se ejecutó exitosamente, False si se omitió"""
+def open_clone(ev: Ev) -> tuple[bool, str]:
+    """
+    Ejecuta OPEN (BUY/SELL) con reintentos inmediatos.
+    Retorna (True, "EXITOSO") si se ejecutó exitosamente
+    Retorna (False, motivo_error) si falla después de 3 intentos (motivo del broker)
+    """
     ensure_symbol(ev.symbol)
-
     comment = clone_comment(ev.master_ticket)
-    
-    # CONTROL: Buscar ticket origen en abiertas O historial
-    if ticket_exists_anywhere(ev.symbol, ev.master_ticket):
-        print(f"[SKIP OPEN] {ev.symbol} (maestro: {ev.master_ticket}) - Ya existe en abiertas o historial")
-        return False  # ya existe, skip línea
-
     lots = compute_slave_lots(ev.symbol, ev.master_lots)
-    tick = mt5.symbol_info_tick(ev.symbol)
-    if tick is None:
-        raise RuntimeError(f"No tick para {ev.symbol}")
-
-    if ev.order_type == "BUY":
-        otype = mt5.ORDER_TYPE_BUY
-        price = tick.ask
-    elif ev.order_type == "SELL":
-        otype = mt5.ORDER_TYPE_SELL
-        price = tick.bid
-    else:
-        raise ValueError(f"order_type no soportado: {ev.order_type}")
-
-    req = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": ev.symbol,
-        "volume": lots,
-        "type": otype,
-        "price": price,
-        "sl": ev.sl if ev.sl > 0 else 0.0,
-        "tp": ev.tp if ev.tp > 0 else 0.0,
-        "deviation": SLIPPAGE_POINTS,
-        "magic": MAGIC,
-        "comment": comment,
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_FOK,  # si falla por broker: prueba IOC/RETURN
-    }
-    res = mt5.order_send(req)
-    if res is None or res.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-        raise RuntimeError(f"OPEN fallo retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment',None)}")
     
-    return True  # Éxito
+    # Reintentos inmediatos (3 intentos)
+    for intento in range(1, 4):
+        try:
+            tick = mt5.symbol_info_tick(ev.symbol)
+            if tick is None:
+                raise RuntimeError(f"No tick para {ev.symbol}")
 
-def close_clone(ev: Ev) -> bool:
-    """Ejecuta CLOSE. Retorna True si se ejecutó exitosamente, False si se omitió"""
+            if ev.order_type == "BUY":
+                otype = mt5.ORDER_TYPE_BUY
+                price = tick.ask
+            elif ev.order_type == "SELL":
+                otype = mt5.ORDER_TYPE_SELL
+                price = tick.bid
+            else:
+                raise ValueError(f"order_type no soportado: {ev.order_type}")
+
+            req = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": ev.symbol,
+                "volume": lots,
+                "type": otype,
+                "price": price,
+                "sl": ev.sl if ev.sl > 0 else 0.0,
+                "tp": ev.tp if ev.tp > 0 else 0.0,
+                "deviation": SLIPPAGE_POINTS,
+                "magic": MAGIC,
+                "comment": comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_FOK,
+            }
+            res = mt5.order_send(req)
+            
+            if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+                return (True, "EXITOSO")
+            
+            # Si falla, preparar mensaje de error del broker
+            error_msg = f"retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment','')}"
+            
+            # Si es el último intento, retornar error
+            if intento == 3:
+                return (False, f"ERROR BROKER: {error_msg}")
+            
+            # Continuar con siguiente intento
+            continue
+            
+        except Exception as e:
+            error_msg = str(e)
+            if intento == 3:
+                return (False, f"ERROR: {error_msg}")
+            continue
+    
+    return (False, "ERROR: Fallo después de 3 intentos")
+
+def close_clone(ev: Ev) -> tuple[bool, str]:
+    """
+    Ejecuta CLOSE con reintentos inmediatos.
+    Retorna (True, "EXITOSO") si se ejecutó exitosamente
+    Retorna (True, "ya estaba cerrada") si la posición ya estaba cerrada (éxito)
+    Retorna (False, motivo_error) si falla después de 3 intentos (motivo del broker)
+    """
     comment = clone_comment(ev.master_ticket)
-    
-    # CONTROL: Buscar ticket origen en abiertas O historial
-    # Solo cierra si encuentra abierta
-    if not ticket_exists_anywhere(ev.symbol, ev.master_ticket):
-        print(f"[SKIP CLOSE] {ev.symbol} (maestro: {ev.master_ticket}) - No encontrado en abiertas ni historial")
-        return False  # no existe, skip línea
+    ensure_symbol(ev.symbol)
     
     # Buscar posición abierta para cerrar
     p = find_open_clone(ev.symbol, comment, ev.master_ticket)
     if p is None:
-        print(f"[SKIP CLOSE] {ev.symbol} (maestro: {ev.master_ticket}) - Encontrado en historial pero no abierta (ya cerrada)")
-        return False  # existe en historial pero no abierta, skip línea
-
-    ensure_symbol(ev.symbol)
-    tick = mt5.symbol_info_tick(ev.symbol)
-    if tick is None:
-        raise RuntimeError(f"No tick para {ev.symbol}")
-
-    # Cerrar: operación contraria con position=ticket
-    if p.type == mt5.POSITION_TYPE_BUY:
-        otype = mt5.ORDER_TYPE_SELL
-        price = tick.bid
-    else:
-        otype = mt5.ORDER_TYPE_BUY
-        price = tick.ask
-
-    req = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": ev.symbol,
-        "position": int(p.ticket),
-        "volume": float(p.volume),
-        "type": otype,
-        "price": price,
-        "deviation": SLIPPAGE_POINTS,
-        "magic": int(p.magic),
-        "comment": comment,
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_FOK,
-    }
-    res = mt5.order_send(req)
-    if res is None:
-        raise RuntimeError(f"CLOSE fallo: order_send retornó None")
-    if res.retcode != mt5.TRADE_RETCODE_DONE:
-        raise RuntimeError(f"CLOSE fallo retcode={res.retcode} comment={getattr(res,'comment','')} deal={getattr(res,'deal','')}")
+        # Posición no encontrada = ya estaba cerrada (éxito)
+        return (True, "ya estaba cerrada")
     
-    return True  # Éxito
+    # Reintentos inmediatos (3 intentos)
+    for intento in range(1, 4):
+        try:
+            tick = mt5.symbol_info_tick(ev.symbol)
+            if tick is None:
+                raise RuntimeError(f"No tick para {ev.symbol}")
+
+            # Verificar que la posición sigue existiendo (puede haberse cerrado entre intentos)
+            p = find_open_clone(ev.symbol, comment, ev.master_ticket)
+            if p is None:
+                return (True, "ya estaba cerrada")
+
+            # Cerrar: operación contraria con position=ticket
+            if p.type == mt5.POSITION_TYPE_BUY:
+                otype = mt5.ORDER_TYPE_SELL
+                price = tick.bid
+            else:
+                otype = mt5.ORDER_TYPE_BUY
+                price = tick.ask
+
+            req = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": ev.symbol,
+                "position": int(p.ticket),
+                "volume": float(p.volume),
+                "type": otype,
+                "price": price,
+                "deviation": SLIPPAGE_POINTS,
+                "magic": int(p.magic),
+                "comment": comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_FOK,
+            }
+            res = mt5.order_send(req)
+            
+            if res is not None and res.retcode == mt5.TRADE_RETCODE_DONE:
+                return (True, "EXITOSO")
+            
+            # Si falla, preparar mensaje de error del broker
+            error_msg = f"retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment','')}"
+            
+            # Si es el último intento, retornar error
+            if intento == 3:
+                return (False, f"ERROR BROKER: {error_msg}")
+            
+            # Continuar con siguiente intento
+            continue
+            
+        except Exception as e:
+            error_msg = str(e)
+            if intento == 3:
+                return (False, f"ERROR: {error_msg}")
+            continue
+    
+    return (False, "ERROR: Fallo después de 3 intentos")
 
 def modify_clone(ev: Ev) -> tuple[bool, str]:
     """
-    Ejecuta MODIFY. 
+    Ejecuta MODIFY con reintentos inmediatos.
     Retorna (True, "EXITOSO") si se ejecutó exitosamente
-    Retorna (False, "NO_EXISTE") si la posición no existe (eliminar del CSV)
-    Retorna (False, "FALLO") si order_send falló (mantener en CSV para reintento)
+    Retorna (False, motivo_error) si falla después de 3 intentos (motivo del broker)
     """
     comment = clone_comment(ev.master_ticket)
-    
-    # CONTROL: Buscar ticket origen en abiertas O historial
-    # Solo modifica si encuentra (abierta o en historial)
-    if not ticket_exists_anywhere(ev.symbol, ev.master_ticket):
-        print(f"[SKIP MODIFY] {ev.symbol} (maestro: {ev.master_ticket}) - No encontrado en abiertas ni historial")
-        return (False, "NO_EXISTE")  # no existe, eliminar del CSV
     
     # Buscar posición abierta para modificar
     p = find_open_clone(ev.symbol, comment, ev.master_ticket)
     if p is None:
-        print(f"[SKIP MODIFY] {ev.symbol} (maestro: {ev.master_ticket}) - Encontrado en historial pero no abierta")
-        return (False, "NO_EXISTE")  # existe en historial pero no abierta, eliminar del CSV
-
-    req = {
-        "action": mt5.TRADE_ACTION_SLTP,
-        "position": int(p.ticket),
-        "symbol": ev.symbol,
-        "sl": ev.sl if ev.sl > 0 else 0.0,
-        "tp": ev.tp if ev.tp > 0 else 0.0,
-        "comment": comment,
-    }
-    res = mt5.order_send(req)
-    # NO_CHANGES es normal si repites la misma modificación
-    ok = (res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_NO_CHANGES))
-    if not ok:
-        error_msg = f"MODIFY fallo retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment',None)}"
-        print(f"[ERROR MODIFY] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg}")
-        return (False, "FALLO")  # fallo al modificar, mantener en CSV para reintento
+        # Posición no existe = no se puede modificar, tratar como éxito (ya procesado)
+        return (True, "EXITOSO")
     
-    return (True, "EXITOSO")  # Éxito, eliminar del CSV
+    # Reintentos inmediatos (3 intentos)
+    for intento in range(1, 4):
+        try:
+            # Verificar que la posición sigue existiendo (puede haberse cerrado entre intentos)
+            p = find_open_clone(ev.symbol, comment, ev.master_ticket)
+            if p is None:
+                return (True, "EXITOSO")  # Ya no existe, tratar como éxito
+            
+            req = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "position": int(p.ticket),
+                "symbol": ev.symbol,
+                "sl": ev.sl if ev.sl > 0 else 0.0,
+                "tp": ev.tp if ev.tp > 0 else 0.0,
+                "comment": comment,
+            }
+            res = mt5.order_send(req)
+            
+            # NO_CHANGES es normal si repites la misma modificación
+            if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_NO_CHANGES):
+                return (True, "EXITOSO")
+            
+            # Si falla, preparar mensaje de error del broker
+            error_msg = f"retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment','')}"
+            
+            # Si es el último intento, retornar error
+            if intento == 3:
+                return (False, f"ERROR BROKER: {error_msg}")
+            
+            # Continuar con siguiente intento
+            continue
+            
+        except Exception as e:
+            error_msg = str(e)
+            if intento == 3:
+                return (False, f"ERROR: {error_msg}")
+            continue
+    
+    return (False, "ERROR: Fallo después de 3 intentos")
 
 def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
     """
@@ -431,7 +486,7 @@ def main_loop():
         print(f"Cuenta Fondeo: {CUENTA_FONDEO}")
         if CUENTA_FONDEO:
             print(f"Multiplicador de lotaje: {LOT_MULTIPLIER}x")
-        print(f"Verificación: Solo MT5 (historial + abiertas)")
+        print(f"Modo: Ejecución directa con reintentos (3 intentos inmediatos)")
         print(f"Presiona Ctrl+C para detener")
         print("-" * 60)
 
@@ -441,63 +496,63 @@ def main_loop():
                     # Leer eventos y líneas originales
                     events, lines, header = read_events_from_csv(path)
                     
-                    # Líneas que se mantendrán en el CSV principal (no procesadas exitosamente)
-                    remaining_lines: list[str] = []
-                    
-                    # Procesar cada evento
+                    # Procesar cada evento (todas las líneas se procesan y pasan al histórico)
+                    eventos_procesados = 0
                     for idx, ev in enumerate(events):
                         if idx >= len(lines):
                             continue  # Protección contra desincronización
                         
                         original_line = lines[idx]
-                        executed_successfully = False
                         
                         try:
-                            # Procesar el evento (cada función verifica en MT5 antes de ejecutar)
+                            # Procesar el evento (ejecución directa con reintentos)
                             if ev.event_type == "OPEN":
-                                executed_successfully = open_clone(ev)
+                                executed_successfully, motivo = open_clone(ev)
                                 if executed_successfully:
                                     print(f"[OPEN] {ev.symbol} {ev.order_type} {ev.master_lots} lots (maestro: {ev.master_ticket})")
-                                # OPEN siempre elimina del CSV si retorna False (ya existe)
-                                if executed_successfully:
-                                    append_to_history_csv(original_line, "EXITOSO")
+                                    append_to_history_csv(original_line, motivo)
                                 else:
-                                    append_to_history_csv(original_line, "OMITIDO (ya existe en MT5)")
+                                    # Fallo después de 3 intentos, eliminar del CSV y pasar al histórico
+                                    print(f"[OPEN FALLIDO] {ev.symbol} (maestro: {ev.master_ticket}): {motivo}")
+                                    append_to_history_csv(original_line, motivo)
+                                eventos_procesados += 1
                                     
                             elif ev.event_type == "CLOSE":
-                                executed_successfully = close_clone(ev)
+                                executed_successfully, motivo = close_clone(ev)
                                 if executed_successfully:
-                                    print(f"[CLOSE] {ev.symbol} (maestro: {ev.master_ticket})")
-                                # CLOSE siempre elimina del CSV si retorna False (ya cerrado)
-                                if executed_successfully:
-                                    append_to_history_csv(original_line, "EXITOSO")
+                                    if motivo == "ya estaba cerrada":
+                                        print(f"[CLOSE] {ev.symbol} (maestro: {ev.master_ticket}) - Ya estaba cerrada")
+                                    else:
+                                        print(f"[CLOSE] {ev.symbol} (maestro: {ev.master_ticket})")
+                                    append_to_history_csv(original_line, motivo)
                                 else:
-                                    append_to_history_csv(original_line, "OMITIDO (ya existe en MT5)")
+                                    # Fallo después de 3 intentos, eliminar del CSV y pasar al histórico
+                                    print(f"[CLOSE FALLIDO] {ev.symbol} (maestro: {ev.master_ticket}): {motivo}")
+                                    append_to_history_csv(original_line, motivo)
+                                eventos_procesados += 1
                                     
                             elif ev.event_type == "MODIFY":
                                 executed_successfully, motivo = modify_clone(ev)
                                 if executed_successfully:
                                     print(f"[MODIFY] {ev.symbol} SL={ev.sl} TP={ev.tp} (maestro: {ev.master_ticket})")
-                                    append_to_history_csv(original_line, "EXITOSO")
-                                elif motivo == "NO_EXISTE":
-                                    # No existe, eliminar del CSV
-                                    append_to_history_csv(original_line, "OMITIDO (ya existe en MT5)")
-                                elif motivo == "FALLO":
-                                    # Fallo al modificar, mantener en CSV para reintento
-                                    remaining_lines.append(original_line)
-                                    append_to_history_csv(original_line, "ERROR: Fallo al modificar (reintento)")
-                            # otros event_type: ignorar
+                                    append_to_history_csv(original_line, motivo)
+                                else:
+                                    # Fallo después de 3 intentos, eliminar del CSV y pasar al histórico
+                                    print(f"[MODIFY FALLIDO] {ev.symbol} (maestro: {ev.master_ticket}): {motivo}")
+                                    append_to_history_csv(original_line, motivo)
+                                eventos_procesados += 1
+                            # otros event_type: ignorar (no se procesan ni eliminan)
                                 
                         except Exception as e:
-                            # Error crítico al ejecutar, mantener en CSV principal para reintento
-                            print(f"[ERROR] {ev.event_type} {ev.symbol} (maestro: {ev.master_ticket}): {e}")
-                            remaining_lines.append(original_line)
-                            append_to_history_csv(original_line, f"ERROR: {str(e)}")
+                            # Error crítico inesperado, eliminar del CSV y pasar al histórico
+                            print(f"[ERROR CRÍTICO] {ev.event_type} {ev.symbol} (maestro: {ev.master_ticket}): {e}")
+                            append_to_history_csv(original_line, f"ERROR CRÍTICO: {str(e)}")
+                            eventos_procesados += 1
                     
-                    # Reescribir CSV principal solo con líneas pendientes
-                    if len(remaining_lines) != len(lines):
-                        write_csv(path, header, remaining_lines)
-                        print(f"[CSV] Actualizado: {len(remaining_lines)} líneas pendientes (de {len(lines)} totales)")
+                    # Eliminar todas las líneas procesadas del CSV (siempre se procesan todas)
+                    if eventos_procesados > 0:
+                        write_csv(path, header, [])
+                        print(f"[CSV] Actualizado: {eventos_procesados} eventos procesados, CSV vaciado")
             except Exception as e:
                 print(f"ERROR: {e}")
 
@@ -510,4 +565,5 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
+
 
