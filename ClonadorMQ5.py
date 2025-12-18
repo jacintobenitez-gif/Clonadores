@@ -187,7 +187,9 @@ def open_clone(ev: Ev) -> bool:
     }
     res = mt5.order_send(req)
     if res is None or res.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-        raise RuntimeError(f"OPEN fallo retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment',None)}")
+        error_msg = f"retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment',None)}"
+        print(f"[ERROR OPEN] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg}")
+        raise RuntimeError(f"OPEN fallo {error_msg}")
     
     return True  # Éxito
 
@@ -382,13 +384,6 @@ def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
     # Dividir en líneas
     all_lines = file_content.splitlines()
     
-    # Debug: mostrar cuántas líneas se leyeron
-    print(f"[DEBUG LECTURA] Archivo decodificado como {used_encoding}, total líneas leídas: {len(all_lines)}")
-    if len(all_lines) > 0:
-        print(f"[DEBUG LECTURA] Primera línea: {repr(all_lines[0][:100])}")
-        if len(all_lines) > 1:
-            print(f"[DEBUG LECTURA] Segunda línea: {repr(all_lines[1][:100])}")
-    
     if not all_lines:
         return events, lines, ""
     
@@ -535,7 +530,6 @@ def main_loop():
                     
                     try:
                         events, lines, header = read_events_from_csv(path)
-                        print(f"[DEBUG] Leídas {len(lines)} líneas del archivo, {len(events)} eventos parseados")
                     except Exception as e:
                         print(f"[ERROR LECTURA] Error al leer archivo {path}: {e}")
                         time.sleep(TIMER_SECONDS)
@@ -545,7 +539,6 @@ def main_loop():
                     remaining_lines: list[str] = []
                     
                     # Procesar cada evento
-                    print(f"[DEBUG] Procesando {len(events)} eventos...")
                     for idx, ev in enumerate(events):
                         if idx >= len(lines):
                             continue  # Protección contra desincronización
@@ -556,7 +549,6 @@ def main_loop():
                         try:
                             # Procesar el evento (cada función verifica en MT5 antes de ejecutar)
                             if ev.event_type == "OPEN":
-                                print(f"[DEBUG] Procesando OPEN {idx+1}/{len(events)}: {ev.symbol} {ev.order_type} {ev.master_lots} lots (maestro: {ev.master_ticket})")
                                 executed_successfully = open_clone(ev)
                                 if executed_successfully:
                                     print(f"[OPEN] {ev.symbol} {ev.order_type} {ev.master_lots} lots (maestro: {ev.master_ticket})")
