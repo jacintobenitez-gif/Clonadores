@@ -146,21 +146,22 @@ def ticket_exists_anywhere(symbol: str, master_ticket: str):
 
 # Función eliminada - ahora usamos ticket_exists_anywhere() directamente
 
-def open_clone(ev: Ev) -> bool:
-    """Ejecuta OPEN (BUY/SELL). Retorna True si se ejecutó exitosamente, False si se omitió"""
-    ensure_symbol(ev.symbol)
-
+def open_clone(ev: Ev) -> tuple[bool, str]:
+    """
+    Ejecuta OPEN (BUY/SELL) directamente sin verificaciones previas.
+    Retorna (True, "EXITOSO") si se ejecutó exitosamente
+    Retorna (False, "ERROR: [mensaje]") si falla (con mensaje descriptivo del MT5)
+    En ambos casos se elimina del CSV y se escribe al histórico.
+    """
     comment = clone_comment(ev.master_ticket)
     
-    # CONTROL: Buscar ticket origen en abiertas O historial
-    if ticket_exists_anywhere(ev.symbol, ev.master_ticket):
-        print(f"[SKIP OPEN] {ev.symbol} (maestro: {ev.master_ticket}) - Ya existe en abiertas o historial")
-        return False  # ya existe, skip línea
-
+    ensure_symbol(ev.symbol)
     lots = compute_slave_lots(ev.symbol, ev.master_lots)
     tick = mt5.symbol_info_tick(ev.symbol)
     if tick is None:
-        raise RuntimeError(f"No tick para {ev.symbol}")
+        error_msg = f"No tick para {ev.symbol}"
+        print(f"[ERROR OPEN] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg}")
+        return (False, f"ERROR: {error_msg}")
 
     if ev.order_type == "BUY":
         otype = mt5.ORDER_TYPE_BUY
@@ -169,7 +170,9 @@ def open_clone(ev: Ev) -> bool:
         otype = mt5.ORDER_TYPE_SELL
         price = tick.bid
     else:
-        raise ValueError(f"order_type no soportado: {ev.order_type}")
+        error_msg = f"order_type no soportado: {ev.order_type}"
+        print(f"[ERROR OPEN] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg}")
+        return (False, f"ERROR: {error_msg}")
 
     req = {
         "action": mt5.TRADE_ACTION_DEAL,
@@ -183,37 +186,36 @@ def open_clone(ev: Ev) -> bool:
         "magic": MAGIC,
         "comment": comment,
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_FOK,  # si falla por broker: prueba IOC/RETURN
+        "type_filling": mt5.ORDER_FILLING_FOK,
     }
     res = mt5.order_send(req)
-    if res is None or res.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-        error_msg = f"retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment',None)}"
+    if res is None:
+        error_msg = "order_send retornó None"
         print(f"[ERROR OPEN] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg}")
-        raise RuntimeError(f"OPEN fallo {error_msg}")
+        return (False, f"ERROR: {error_msg}")
     
-    return True  # Éxito
+    if res.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+        error_msg = f"retcode={res.retcode} comment={getattr(res,'comment','')}"
+        print(f"[ERROR OPEN] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg}")
+        return (False, f"ERROR: {error_msg}")
+    
+    return (True, "EXITOSO")  # Éxito
 
 def close_clone(ev: Ev) -> tuple[bool, str]:
     """
     Ejecuta CLOSE. 
-    Retorna (True, "EXITOSO") si se ejecutó exitosamente
-    Retorna (False, "NO_EXISTE") si la posición no existe (eliminar del CSV)
-    Retorna (False, "ERROR_RED_10031") si falla por error 10031 (mantener en CSV para reintento)
-    Retorna (False, "ERROR") si falla por otro motivo (eliminar del CSV)
+    Retorna (True, "CLOSE OK") si se ejecutó exitosamente
+    Retorna (False, "NO_EXISTE") si la posición no está abierta (eliminar del CSV)
+    Retorna (False, "FALLO") si falla por cualquier motivo (mantener en CSV para reintento)
     """
     comment = clone_comment(ev.master_ticket)
     
-    # CONTROL: Buscar ticket origen en abiertas O historial
-    # Solo cierra si encuentra abierta
-    if not ticket_exists_anywhere(ev.symbol, ev.master_ticket):
-        print(f"[SKIP CLOSE] {ev.symbol} (maestro: {ev.master_ticket}) - No encontrado en abiertas ni historial")
-        return (False, "NO_EXISTE")  # no existe, eliminar del CSV
-    
-    # Buscar posición abierta para cerrar
+    # CONTROL: Solo buscar en posiciones abiertas (no en historial)
+    # Solo se puede cerrar una posición que está abierta
     p = find_open_clone(ev.symbol, comment, ev.master_ticket)
     if p is None:
-        print(f"[SKIP CLOSE] {ev.symbol} (maestro: {ev.master_ticket}) - Encontrado en historial pero no abierta (ya cerrada)")
-        return (False, "NO_EXISTE")  # existe en historial pero no abierta, eliminar del CSV
+        print(f"[SKIP CLOSE] {ev.symbol} (maestro: {ev.master_ticket}) - No existe operacion abierta")
+        return (False, "NO_EXISTE")  # no está abierta, eliminar del CSV
 
     ensure_symbol(ev.symbol)
     tick = mt5.symbol_info_tick(ev.symbol)
@@ -243,42 +245,36 @@ def close_clone(ev: Ev) -> tuple[bool, str]:
     }
     res = mt5.order_send(req)
     if res is None:
-        raise RuntimeError(f"CLOSE fallo: order_send retornó None")
+        error_msg = "order_send retornó None"
+        print(f"[ERROR CLOSE] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
+        return (False, "FALLO")  # Fallo, mantener en CSV para reintento
     
     if res.retcode == mt5.TRADE_RETCODE_DONE:
-        return (True, "EXITOSO")  # Éxito
+        return (True, "CLOSE OK")  # Éxito
     
-    # Detectar error 10031 (ausencia de conexión de red)
-    if res.retcode == 10031:
-        error_msg = f"retcode={res.retcode} comment={getattr(res,'comment','')}"
-        print(f"[CLOSE ERROR RED] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
-        return (False, "ERROR_RED_10031")  # Error de red, mantener en CSV para reintento
-    
-    # Otro error: eliminar del CSV
+    # Cualquier error (incluyendo 10031): mantener en CSV para reintento hasta que se cierre la operación
     error_msg = f"retcode={res.retcode} comment={getattr(res,'comment','')}"
-    raise RuntimeError(f"CLOSE fallo {error_msg}")
+    if res.retcode == 10031:
+        print(f"[CLOSE ERROR RED] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
+    else:
+        print(f"[ERROR CLOSE] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
+    return (False, "FALLO")  # Fallo, mantener en CSV para reintento
 
 def modify_clone(ev: Ev) -> tuple[bool, str]:
     """
     Ejecuta MODIFY. 
-    Retorna (True, "EXITOSO") si se ejecutó exitosamente
-    Retorna (False, "NO_EXISTE") si la posición no existe (eliminar del CSV)
-    Retorna (False, "ERROR_RED_10031") si falla por error 10031 (mantener en CSV para reintento)
-    Retorna (False, "FALLO") si order_send falló por otro motivo (mantener en CSV para reintento)
+    Retorna (True, "MODIFY OK") si se ejecutó exitosamente
+    Retorna (False, "NO_EXISTE") si la posición no está abierta (eliminar del CSV)
+    Retorna (False, "FALLO") si falla por cualquier motivo (mantener en CSV para reintento)
     """
     comment = clone_comment(ev.master_ticket)
     
-    # CONTROL: Buscar ticket origen en abiertas O historial
-    # Solo modifica si encuentra (abierta o en historial)
-    if not ticket_exists_anywhere(ev.symbol, ev.master_ticket):
-        print(f"[SKIP MODIFY] {ev.symbol} (maestro: {ev.master_ticket}) - No encontrado en abiertas ni historial")
-        return (False, "NO_EXISTE")  # no existe, eliminar del CSV
-    
-    # Buscar posición abierta para modificar
+    # CONTROL: Solo buscar en posiciones abiertas (no en historial)
+    # Solo se puede modificar una posición que está abierta
     p = find_open_clone(ev.symbol, comment, ev.master_ticket)
     if p is None:
-        print(f"[SKIP MODIFY] {ev.symbol} (maestro: {ev.master_ticket}) - Encontrado en historial pero no abierta")
-        return (False, "NO_EXISTE")  # existe en historial pero no abierta, eliminar del CSV
+        print(f"[SKIP MODIFY] {ev.symbol} (maestro: {ev.master_ticket}) - No existe operacion abierta")
+        return (False, "NO_EXISTE")  # no está abierta, eliminar del CSV
 
     req = {
         "action": mt5.TRADE_ACTION_SLTP,
@@ -290,19 +286,16 @@ def modify_clone(ev: Ev) -> tuple[bool, str]:
     }
     res = mt5.order_send(req)
     
-    # NO_CHANGES es normal si repites la misma modificación
+    # Verificar resultado
     if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_NO_CHANGES):
-        return (True, "EXITOSO")  # Éxito, eliminar del CSV
+        return (True, "MODIFY OK")  # Éxito, eliminar del CSV
     
-    # Detectar error 10031 (ausencia de conexión de red)
-    if res is not None and res.retcode == 10031:
-        error_msg = f"retcode={res.retcode} comment={getattr(res,'comment','')}"
-        print(f"[MODIFY ERROR RED] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
-        return (False, "ERROR_RED_10031")  # Error de red, mantener en CSV para reintento
-    
-    # Otro error: mantener en CSV para reintento (comportamiento original)
+    # Cualquier error (incluyendo 10031): mantener en CSV para reintento hasta que se cierre la operación
     error_msg = f"retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment',None)}"
-    print(f"[ERROR MODIFY] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg}")
+    if res is not None and res.retcode == 10031:
+        print(f"[MODIFY ERROR RED] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
+    else:
+        print(f"[ERROR MODIFY] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
     return (False, "FALLO")  # fallo al modificar, mantener en CSV para reintento
 
 def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
@@ -340,42 +333,14 @@ def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
         print(f"[ERROR LECTURA] El archivo está vacío después de leer: {path}")
         return events, lines, ""
     
-    file_content = None
-    used_encoding = None
-    
-    # Detectar UTF-16 por BOM
-    if len(raw_content) >= 2:
-        bom = raw_content[:2]
-        if bom == b'\xff\xfe':  # UTF-16-LE BOM
-            try:
-                file_content = raw_content.decode('utf-16-le')
-                used_encoding = 'utf-16-le'
-            except (UnicodeDecodeError, UnicodeError) as e:
-                print(f"[ERROR LECTURA] Fallo al decodificar UTF-16-LE en {path}: {e}")
-        elif bom == b'\xfe\xff':  # UTF-16-BE BOM
-            try:
-                file_content = raw_content.decode('utf-16-be')
-                used_encoding = 'utf-16-be'
-            except (UnicodeDecodeError, UnicodeError) as e:
-                print(f"[ERROR LECTURA] Fallo al decodificar UTF-16-BE en {path}: {e}")
-    
-    # Si no es UTF-16, intentar otras codificaciones
-    if file_content is None:
-        encodings = ["utf-8", "utf-8-sig", "windows-1252", "latin-1", "cp1252"]
-        for enc in encodings:
-            try:
-                file_content = raw_content.decode(enc)
-                used_encoding = enc
-                break
-            except (UnicodeDecodeError, UnicodeError) as e:
-                print(f"[ERROR LECTURA] Fallo al decodificar {enc} en {path}: {e}")
-                continue
-    
-    if file_content is None:
-        print(f"[ERROR LECTURA CRÍTICO] No se pudo decodificar el archivo {path} con ninguna codificación conocida")
+    # Leer solo UTF-8 (estándar)
+    try:
+        file_content = raw_content.decode('utf-8')
+    except (UnicodeDecodeError, UnicodeError) as e:
+        print(f"[ERROR LECTURA] Fallo al decodificar UTF-8 en {path}: {e}")
         print(f"[ERROR LECTURA] Tamaño del archivo: {len(raw_content)} bytes")
         print(f"[ERROR LECTURA] Primeros 20 bytes (hex): {raw_content[:20].hex()}")
-        raise RuntimeError(f"No se pudo decodificar el archivo {path} con ninguna codificación conocida")
+        raise RuntimeError(f"No se pudo decodificar el archivo {path} como UTF-8: {e}")
     
     # Limpiar BOM si existe
     if file_content.startswith('\ufeff'):
@@ -397,8 +362,8 @@ def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
         header_line = first_line
         start_idx = 1
     else:
-        # No hay header, usar header por defecto
-        header_line = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit"
+        # No hay header, usar header por defecto (nuevo formato simplificado)
+        header_line = "event_type;ticket;order_type;lots;symbol;sl;tp"
         start_idx = 0
     
     # Parsear cada línea (empezando desde start_idx)
@@ -412,15 +377,15 @@ def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
         if len(row) < 5:
             continue
 
-        # indices según tu formato:
-        # 0 event_type; 1 ticket; 2 order_type; 3 lots; 4 symbol; ... 7 sl; 8 tp
+        # Nuevo formato simplificado: event_type;ticket;order_type;lots;symbol;sl;tp
+        # indices: 0=event_type, 1=ticket, 2=order_type, 3=lots, 4=symbol, 5=sl, 6=tp
         et = upper(row[0])
         master_ticket = (row[1] or "").strip()
         ot = upper(row[2])
         lots = f(row[3])
         sym = upper(row[4])
-        sl = f(row[7]) if len(row) > 7 else 0.0
-        tp = f(row[8]) if len(row) > 8 else 0.0
+        sl = f(row[5]) if len(row) > 5 else 0.0
+        tp = f(row[6]) if len(row) > 6 else 0.0
 
         if not sym or not master_ticket:
             continue
@@ -526,7 +491,7 @@ def main_loop():
                     # Leer eventos y líneas originales
                     events: list[Ev] = []
                     lines: list[str] = []
-                    header: str = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit"
+                    header: str = "event_type;ticket;order_type;lots;symbol;sl;tp"
                     
                     try:
                         events, lines, header = read_events_from_csv(path)
@@ -549,47 +514,35 @@ def main_loop():
                         try:
                             # Procesar el evento (cada función verifica en MT5 antes de ejecutar)
                             if ev.event_type == "OPEN":
-                                executed_successfully = open_clone(ev)
+                                executed_successfully, resultado = open_clone(ev)
                                 if executed_successfully:
                                     print(f"[OPEN] {ev.symbol} {ev.order_type} {ev.master_lots} lots (maestro: {ev.master_ticket})")
-                                # OPEN siempre elimina del CSV si retorna False (ya existe)
-                                if executed_successfully:
-                                    append_to_history_csv(original_line, "EXITOSO")
-                                else:
-                                    append_to_history_csv(original_line, "OMITIDO (ya existe en MT5)")
+                                # OPEN siempre elimina del CSV (éxito o fallo), pero escribe al histórico
+                                append_to_history_csv(original_line, resultado)
                                     
                             elif ev.event_type == "CLOSE":
                                 executed_successfully, motivo = close_clone(ev)
                                 if executed_successfully:
                                     print(f"[CLOSE] {ev.symbol} (maestro: {ev.master_ticket})")
-                                    append_to_history_csv(original_line, "EXITOSO")
-                                elif motivo == "ERROR_RED_10031":
-                                    # Error de red 10031: mantener en CSV para reintento
-                                    print(f"[CLOSE ERROR RED] {ev.symbol} (maestro: {ev.master_ticket}) - Manteniendo en CSV para reintento")
-                                    remaining_lines.append(original_line)
-                                    append_to_history_csv(original_line, f"ERROR RED 10031: Mantenido en CSV para reintento")
+                                    append_to_history_csv(original_line, "CLOSE OK")
                                 elif motivo == "NO_EXISTE":
-                                    # No existe, eliminar del CSV
-                                    append_to_history_csv(original_line, "OMITIDO (ya existe en MT5)")
-                                else:
-                                    # Otro error, eliminar del CSV
-                                    append_to_history_csv(original_line, f"ERROR: {motivo}")
+                                    # No existe operación abierta, eliminar del CSV
+                                    append_to_history_csv(original_line, "No existe operacion abierta")
+                                elif motivo == "FALLO":
+                                    # Fallo al cerrar (cualquier error), mantener en CSV para reintento
+                                    remaining_lines.append(original_line)
+                                    append_to_history_csv(original_line, "ERROR: Fallo al cerrar (reintento)")
                                     
                             elif ev.event_type == "MODIFY":
                                 executed_successfully, motivo = modify_clone(ev)
                                 if executed_successfully:
                                     print(f"[MODIFY] {ev.symbol} SL={ev.sl} TP={ev.tp} (maestro: {ev.master_ticket})")
-                                    append_to_history_csv(original_line, "EXITOSO")
-                                elif motivo == "ERROR_RED_10031":
-                                    # Error de red 10031: mantener en CSV para reintento
-                                    print(f"[MODIFY ERROR RED] {ev.symbol} (maestro: {ev.master_ticket}) - Manteniendo en CSV para reintento")
-                                    remaining_lines.append(original_line)
-                                    append_to_history_csv(original_line, f"ERROR RED 10031: Mantenido en CSV para reintento")
+                                    append_to_history_csv(original_line, "MODIFY OK")
                                 elif motivo == "NO_EXISTE":
-                                    # No existe, eliminar del CSV
-                                    append_to_history_csv(original_line, "OMITIDO (ya existe en MT5)")
+                                    # No existe operación abierta, eliminar del CSV
+                                    append_to_history_csv(original_line, "No existe operacion abierta")
                                 elif motivo == "FALLO":
-                                    # Fallo al modificar, mantener en CSV para reintento
+                                    # Fallo al modificar (cualquier error), mantener en CSV para reintento
                                     remaining_lines.append(original_line)
                                     append_to_history_csv(original_line, "ERROR: Fallo al modificar (reintento)")
                             # otros event_type: ignorar

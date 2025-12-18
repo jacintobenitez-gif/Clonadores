@@ -251,6 +251,45 @@ string UTF16BEToString(uchar &bytes[], int startPos = 0, int skipBOM = 0)
 }
 
 //+------------------------------------------------------------------+
+//| Convierte string Unicode (MQL5) a bytes UTF-8                     |
+//+------------------------------------------------------------------+
+void StringToUTF8Bytes(string str, uchar &bytes[])
+{
+   ArrayResize(bytes, 0);
+   int len = StringLen(str);
+   
+   for(int i = 0; i < len; i++)
+   {
+      ushort ch = StringGetCharacter(str, i);
+      
+      // ASCII (0x00-0x7F): 1 byte
+      if(ch < 0x80)
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 1);
+         bytes[size] = (uchar)ch;
+      }
+      // 2 bytes UTF-8: 110xxxxx 10xxxxxx (0x80-0x7FF)
+      else if(ch < 0x800)
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 2);
+         bytes[size] = (uchar)(0xC0 | (ch >> 6));
+         bytes[size + 1] = (uchar)(0x80 | (ch & 0x3F));
+      }
+      // 3 bytes UTF-8: 1110xxxx 10xxxxxx 10xxxxxx (0x800-0xFFFF)
+      else
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 3);
+         bytes[size] = (uchar)(0xE0 | (ch >> 12));
+         bytes[size + 1] = (uchar)(0x80 | ((ch >> 6) & 0x3F));
+         bytes[size + 2] = (uchar)(0x80 | (ch & 0x3F));
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Convertir Windows-1252/Latin-1 a string                          |
 //+------------------------------------------------------------------+
 string Windows1252ToString(uchar &bytes[], int startPos = 0)
@@ -322,116 +361,19 @@ bool ReadFileWithEncoding(string filename, string &lines[])
       return false;
    }
    
-   // Detectar codificación
-   ENCODING_TYPE encoding = DetectEncoding(bytes);
-   
-   // Traza informativa de la codificación detectada (solo para depuración, no se muestra)
-   // string encodingStr = "";
-   // switch(encoding)
-   // {
-   //    case ENCODING_UTF8: encodingStr = "UTF-8"; break;
-   //    case ENCODING_UTF8_SIG: encodingStr = "UTF-8 (con BOM)"; break;
-   //    case ENCODING_UTF16_LE: encodingStr = "UTF-16-LE"; break;
-   //    case ENCODING_UTF16_BE: encodingStr = "UTF-16-BE"; break;
-   //    case ENCODING_WINDOWS_1252: encodingStr = "Windows-1252"; break;
-   //    case ENCODING_LATIN1: encodingStr = "Latin-1"; break;
-   //    case ENCODING_CP1252: encodingStr = "CP1252"; break;
-   //    default: encodingStr = "Desconocida"; break;
-   // }
-   // PrintFormat("[INFO LECTURA] Archivo '%s' detectado como %s (tamaño=%d bytes)", filename, encodingStr, fileSize);
-   
-   // Convertir bytes a líneas según codificación
-   int lineStart = 0;
+   // Leer solo UTF-8 (estándar)
+   // Verificar BOM UTF-8 si existe
    int bomSkip = 0;
-   
-   if(encoding == ENCODING_UTF8_SIG)
+   if(fileSize >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
    {
       bomSkip = 3; // Saltar BOM UTF-8
-      encoding = ENCODING_UTF8;
-   }
-   else if(encoding == ENCODING_UTF16_LE || encoding == ENCODING_UTF16_BE)
-   {
-      bomSkip = 2; // Saltar BOM UTF-16
    }
    
-   // Manejar UTF-16 de manera especial (cada carácter son 2 bytes)
-   if(encoding == ENCODING_UTF16_LE || encoding == ENCODING_UTF16_BE)
-   {
-      int pos = lineStart + bomSkip;
-      
-      while(pos + 1 < fileSize)
-      {
-         string line = "";
-         int lineStartPos = pos;
-         
-         // Leer caracteres hasta encontrar salto de línea o fin de archivo
-         while(pos + 1 < fileSize)
-         {
-            ushort ch;
-            if(encoding == ENCODING_UTF16_LE)
-               ch = (ushort)(bytes[pos] | (bytes[pos + 1] << 8));
-            else
-               ch = (ushort)((bytes[pos] << 8) | bytes[pos + 1]);
-            
-            if(ch == 0) break; // Fin de string
-            if(ch == 0x000A || ch == 0x000D) // LF o CR
-            {
-               pos += 2; // Saltar el carácter de salto de línea
-               if(ch == 0x000D && pos + 1 < fileSize)
-               {
-                  // Verificar si es CRLF
-                  ushort nextCh;
-                  if(encoding == ENCODING_UTF16_LE)
-                     nextCh = (ushort)(bytes[pos] | (bytes[pos + 1] << 8));
-                  else
-                     nextCh = (ushort)((bytes[pos] << 8) | bytes[pos + 1]);
-                  if(nextCh == 0x000A)
-                     pos += 2; // Saltar LF también
-               }
-               break;
-            }
-            
-            line += ShortToString(ch);
-            pos += 2;
-         }
-         
-         // Limpiar línea y agregar si no está vacía
-         StringTrimLeft(line);
-         StringTrimRight(line);
-         if(StringLen(line) > 0)
-         {
-            int count = ArraySize(lines);
-            ArrayResize(lines, count + 1);
-            lines[count] = line;
-         }
-         
-         if(pos >= fileSize) break;
-      }
-      
-      int totalLines = ArraySize(lines);
-      if(totalLines == 0)
-      {
-         PrintFormat("[WARNING LECTURA] Archivo '%s' no contiene líneas válidas después del procesamiento", filename);
-      }
-      
-      return true;
-   }
-   
-   // Manejar UTF-8 y Windows-1252 (formato byte por byte)
+   // Convertir bytes UTF-8 a líneas
+   int lineStart = bomSkip;
    while(lineStart < fileSize)
    {
       string line = "";
-      
-      if(encoding == ENCODING_UTF8)
-      {
-         line = UTF8ToString(bytes, lineStart, (lineStart == 0 ? bomSkip : 0));
-      }
-      else // Windows-1252, Latin-1, CP1252 (todos similares)
-      {
-         line = Windows1252ToString(bytes, lineStart);
-      }
-      
-      if(line == "") break; // Fin del archivo
       
       // Encontrar posición del siguiente salto de línea
       int lineEnd = lineStart;
@@ -464,19 +406,11 @@ bool ReadFileWithEncoding(string filename, string &lines[])
       if(!foundLF && lineEnd == lineStart)
          lineEnd = fileSize; // Última línea sin salto
       
-      // Convertir línea completa
+      // Convertir línea completa UTF-8
       uchar lineBytes[];
       ArrayResize(lineBytes, lineEnd - lineStart);
       ArrayCopy(lineBytes, bytes, 0, lineStart, lineEnd - lineStart);
-      
-      if(encoding == ENCODING_UTF8)
-      {
-         line = UTF8ToString(lineBytes, 0, (lineStart == 0 ? bomSkip : 0));
-      }
-      else
-      {
-         line = Windows1252ToString(lineBytes, 0);
-      }
+      string line = UTF8ToString(lineBytes, 0, 0);
       
       // Limpiar línea (eliminar CR/LF y espacios)
       StringTrimLeft(line);
@@ -645,31 +579,31 @@ bool TicketExistsAnywhere(string symbol, string masterTicket)
 
 //+------------------------------------------------------------------+
 //| Ejecutar OPEN                                                     |
+//| Ejecuta directamente sin verificaciones previas (el ticket del origen es único)
+//| Retorna: 1=EXITOSO, -2=ERROR (con mensaje descriptivo del MT5 en errorMsg)
 //+------------------------------------------------------------------+
-bool ExecuteOpen(string symbol, string orderType, double masterLots, 
-                 double sl, double tp, string masterTicket)
+int ExecuteOpen(string symbol, string orderType, double masterLots, 
+                 double sl, double tp, string masterTicket, string &errorMsg)
 {
-   // Verificar si ya existe
-   if(TicketExistsAnywhere(symbol, masterTicket))
-   {
-      PrintFormat("[SKIP OPEN] %s (maestro: %s) - Ya existe en abiertas o historial", 
-                  symbol, masterTicket);
-      return false;
-   }
+   // Ejecuta OPEN directamente sin verificaciones previas (el ticket del origen es único)
+   // Retorna: 1=EXITOSO, -2=ERROR (con mensaje descriptivo del MT5 en errorMsg)
+   errorMsg = "";
    
    // Asegurar símbolo
    if(!SymbolSelect(symbol, true))
    {
-      PrintFormat("[ERROR] No se puede seleccionar %s", symbol);
-      return false;
+      errorMsg = "ERROR: No se puede seleccionar " + symbol;
+      PrintFormat("[ERROR OPEN] %s (maestro: %s): %s", symbol, masterTicket, errorMsg);
+      return -2; // ERROR
    }
    
    double lots = ComputeSlaveLots(symbol, masterLots);
    MqlTick tick;
    if(!SymbolInfoTick(symbol, tick))
    {
-      PrintFormat("[ERROR] No hay tick para %s", symbol);
-      return false;
+      errorMsg = "ERROR: No hay tick para " + symbol;
+      PrintFormat("[ERROR OPEN] %s (maestro: %s): %s", symbol, masterTicket, errorMsg);
+      return -2; // ERROR
    }
    
    ENUM_ORDER_TYPE otype;
@@ -687,8 +621,9 @@ bool ExecuteOpen(string symbol, string orderType, double masterLots,
    }
    else
    {
-      PrintFormat("[ERROR] order_type no soportado: %s", orderType);
-      return false;
+      errorMsg = "ERROR: order_type no soportado: " + orderType;
+      PrintFormat("[ERROR OPEN] %s (maestro: %s): %s", symbol, masterTicket, errorMsg);
+      return -2; // ERROR
    }
    
    MqlTradeRequest request = {};
@@ -707,40 +642,34 @@ bool ExecuteOpen(string symbol, string orderType, double masterLots,
    request.type_time = ORDER_TIME_GTC;
    request.type_filling = ORDER_FILLING_FOK;
    
-   if(!OrderSend(request, result))
+   // Enviar orden
+   bool sent = OrderSend(request, result);
+   
+   // Verificar resultado
+   if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
    {
-      PrintFormat("[ERROR OPEN] %s: retcode=%d comment=%s", 
-                  symbol, result.retcode, result.comment);
-      return false;
+      return 1; // EXITOSO
    }
    
-   if(result.retcode != TRADE_RETCODE_DONE && result.retcode != TRADE_RETCODE_PLACED)
-   {
-      PrintFormat("[ERROR OPEN] %s: retcode=%d comment=%s", 
-                  symbol, result.retcode, result.comment);
-      return false;
-   }
-   
-   return true;
+   // Error al ejecutar
+   errorMsg = "ERROR: retcode=" + IntegerToString(result.retcode) + " comment=" + result.comment;
+   PrintFormat("[ERROR OPEN] %s (maestro: %s): %s", symbol, masterTicket, errorMsg);
+   return -2; // ERROR
 }
 
 //+------------------------------------------------------------------+
 //| Ejecutar CLOSE                                                    |
+//| Solo busca en posiciones abiertas (no en historial)               |
+//| Retorna: 1=CLOSE OK, 0=NO_EXISTE, 2=FALLO                       |
 //+------------------------------------------------------------------+
-int ExecuteClose(string symbol, string masterTicket) // Retorna: 1=éxito, 0=no existe, -1=error red 10031
+int ExecuteClose(string symbol, string masterTicket)
 {
-   // Verificar si existe
-   if(!TicketExistsAnywhere(symbol, masterTicket))
-   {
-      PrintFormat("[SKIP CLOSE] %s (maestro: %s) - No encontrado", symbol, masterTicket);
-      return 0; // NO_EXISTE
-   }
-   
-   // Buscar posición abierta
+   // CONTROL: Solo buscar en posiciones abiertas (no en historial)
+   // Solo se puede cerrar una posición que está abierta
    ulong ticket = FindOpenPosition(symbol, masterTicket);
    if(ticket == 0)
    {
-      PrintFormat("[SKIP CLOSE] %s (maestro: %s) - Ya cerrada", symbol, masterTicket);
+      PrintFormat("[SKIP CLOSE] %s (maestro: %s) - No existe operacion abierta", symbol, masterTicket);
       return 0; // NO_EXISTE
    }
    
@@ -802,48 +731,36 @@ int ExecuteClose(string symbol, string masterTicket) // Retorna: 1=éxito, 0=no 
    // Verificar resultado
    if(result.retcode == TRADE_RETCODE_DONE)
    {
-      return 1; // EXITOSO
+      return 1; // CLOSE OK
    }
    
-   // Detectar error 10031 (ausencia de conexión de red) - puede ocurrir incluso si OrderSend retorna false
+   // Cualquier error (incluyendo 10031): mantener en CSV para reintento hasta que se cierre la operación
    if(result.retcode == 10031)
    {
-      PrintFormat("[CLOSE ERROR RED] %s (maestro: %s): retcode=10031 - Manteniendo en CSV para reintento", 
-                  symbol, masterTicket);
-      return -1; // ERROR_RED_10031
-   }
-   
-   // Otros errores
-   if(!sent)
-   {
-      PrintFormat("[ERROR CLOSE] %s (maestro: %s): retcode=%d comment=%s", 
-                  symbol, masterTicket, result.retcode, result.comment);
+      PrintFormat("[CLOSE ERROR RED] %s (maestro: %s): retcode=10031 comment=%s - Manteniendo en CSV para reintento", 
+                  symbol, masterTicket, result.comment);
    }
    else
    {
-      PrintFormat("[ERROR CLOSE] %s (maestro: %s): retcode=%d comment=%s", 
+      PrintFormat("[ERROR CLOSE] %s (maestro: %s): retcode=%d comment=%s - Manteniendo en CSV para reintento", 
                   symbol, masterTicket, result.retcode, result.comment);
    }
-   return 0;
+   return 2; // FALLO
 }
 
 //+------------------------------------------------------------------+
 //| Ejecutar MODIFY                                                   |
+//| Solo busca en posiciones abiertas (no en historial)              |
+//| Retorna: 1=MODIFY OK, 0=NO_EXISTE, 2=FALLO                       |
 //+------------------------------------------------------------------+
 int ExecuteModify(string symbol, double sl, double tp, string masterTicket)
 {
-   // Verificar si existe
-   if(!TicketExistsAnywhere(symbol, masterTicket))
-   {
-      PrintFormat("[SKIP MODIFY] %s (maestro: %s) - No encontrado", symbol, masterTicket);
-      return 0; // NO_EXISTE
-   }
-   
-   // Buscar posición abierta
+   // CONTROL: Solo buscar en posiciones abiertas (no en historial)
+   // Solo se puede modificar una posición que está abierta
    ulong ticket = FindOpenPosition(symbol, masterTicket);
    if(ticket == 0)
    {
-      PrintFormat("[SKIP MODIFY] %s (maestro: %s) - Ya cerrada", symbol, masterTicket);
+      PrintFormat("[SKIP MODIFY] %s (maestro: %s) - No existe operacion abierta", symbol, masterTicket);
       return 0; // NO_EXISTE
    }
    
@@ -863,33 +780,25 @@ int ExecuteModify(string symbol, double sl, double tp, string masterTicket)
    // Verificar resultado - IMPORTANTE: verificar retcode incluso si OrderSend retorna false
    if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_NO_CHANGES)
    {
-      return 1; // EXITOSO
+      return 1; // MODIFY OK
    }
    
-   // Detectar error 10031 (ausencia de conexión de red) - puede ocurrir incluso si OrderSend retorna false
+   // Cualquier error (incluyendo 10031): mantener en CSV para reintento hasta que se cierre la operación
    if(result.retcode == 10031)
    {
-      PrintFormat("[MODIFY ERROR RED] %s (maestro: %s): retcode=10031 - Manteniendo en CSV para reintento", 
-                  symbol, masterTicket);
-      return -1; // ERROR_RED_10031
-   }
-   
-   // Otros errores
-   if(!sent)
-   {
-      PrintFormat("[ERROR MODIFY] %s (maestro: %s): retcode=%d comment=%s", 
-                  symbol, masterTicket, result.retcode, result.comment);
+      PrintFormat("[MODIFY ERROR RED] %s (maestro: %s): retcode=10031 comment=%s - Manteniendo en CSV para reintento", 
+                  symbol, masterTicket, result.comment);
    }
    else
    {
-      PrintFormat("[ERROR MODIFY] %s (maestro: %s): retcode=%d comment=%s", 
+      PrintFormat("[ERROR MODIFY] %s (maestro: %s): retcode=%d comment=%s - Manteniendo en CSV para reintento", 
                   symbol, masterTicket, result.retcode, result.comment);
    }
    return 2; // FALLO
 }
 
 //+------------------------------------------------------------------+
-//| Escribir al histórico                                            |
+//| Escribir al histórico en UTF-8                                   |
 //+------------------------------------------------------------------+
 void AppendToHistory(string csvLine, string resultado)
 {
@@ -903,20 +812,28 @@ void AppendToHistory(string csvLine, string resultado)
    
    string histLine = timestamp + ";" + resultado + ";" + csvLine + "\n";
    
-   int handle = FileOpen(histPath, FILE_TXT | FILE_READ | FILE_WRITE | FILE_COMMON |
+   int handle = FileOpen(histPath, FILE_BIN | FILE_READ | FILE_WRITE | FILE_COMMON |
                         FILE_SHARE_READ | FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE)
    {
       // Intentar crear archivo nuevo
-      handle = FileOpen(histPath, FILE_TXT | FILE_WRITE | FILE_COMMON |
+      handle = FileOpen(histPath, FILE_BIN | FILE_WRITE | FILE_COMMON |
                        FILE_SHARE_READ | FILE_SHARE_WRITE);
       if(handle != INVALID_HANDLE)
       {
-         FileWrite(handle, "timestamp_ejecucion;resultado;event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit");
+         // Escribir header en UTF-8
+         string header = "timestamp_ejecucion;resultado;event_type;ticket;order_type;lots;symbol;sl;tp";
+         uchar headerBytes[];
+         StringToUTF8Bytes(header, headerBytes);
+         FileWriteArray(handle, headerBytes);
+         
+         // Escribir salto de línea UTF-8
+         uchar newline[] = {0x0A};
+         FileWriteArray(handle, newline);
          FileClose(handle);
          
          // Reabrir para append
-         handle = FileOpen(histPath, FILE_TXT | FILE_READ | FILE_WRITE | FILE_COMMON |
+         handle = FileOpen(histPath, FILE_BIN | FILE_READ | FILE_WRITE | FILE_COMMON |
                           FILE_SHARE_READ | FILE_SHARE_WRITE);
       }
    }
@@ -924,17 +841,22 @@ void AppendToHistory(string csvLine, string resultado)
    if(handle != INVALID_HANDLE)
    {
       FileSeek(handle, 0, SEEK_END);
-      FileWriteString(handle, histLine);
+      
+      // Escribir línea en UTF-8
+      uchar lineBytes[];
+      StringToUTF8Bytes(histLine, lineBytes);
+      FileWriteArray(handle, lineBytes);
+      
       FileClose(handle);
    }
 }
 
 //+------------------------------------------------------------------+
-//| Reescribir CSV                                                   |
+//| Reescribir CSV en UTF-8                                          |
 //+------------------------------------------------------------------+
 void WriteCSV(string filename, string header, string &lines[])
 {
-   int handle = FileOpen(filename, FILE_TXT | FILE_WRITE | FILE_COMMON |
+   int handle = FileOpen(filename, FILE_BIN | FILE_WRITE | FILE_COMMON |
                         FILE_SHARE_READ | FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE)
    {
@@ -942,10 +864,22 @@ void WriteCSV(string filename, string header, string &lines[])
       return;
    }
    
-   FileWriteString(handle, header + "\n");
+   // Escribir header en UTF-8
+   uchar headerBytes[];
+   StringToUTF8Bytes(header, headerBytes);
+   FileWriteArray(handle, headerBytes);
+   
+   // Escribir salto de línea UTF-8 (\n = 0x0A)
+   uchar newline[] = {0x0A};
+   FileWriteArray(handle, newline);
+   
+   // Escribir cada línea en UTF-8
    for(int i = 0; i < ArraySize(lines); i++)
    {
-      FileWriteString(handle, lines[i] + "\n");
+      uchar lineBytes[];
+      StringToUTF8Bytes(lines[i], lineBytes);
+      FileWriteArray(handle, lineBytes);
+      FileWriteArray(handle, newline);
    }
    
    FileClose(handle);
@@ -981,15 +915,15 @@ void ProcessCSV()
       }
       else
       {
-         // No hay header, usar header por defecto
-         header = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit";
+         // No hay header, usar header por defecto (nuevo formato simplificado)
+         header = "event_type;ticket;order_type;lots;symbol;sl;tp";
          startIdx = 0;
       }
    }
    else
    {
-      // Archivo vacío, usar header por defecto
-      header = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit";
+      // Archivo vacío, usar header por defecto (nuevo formato simplificado)
+      header = "event_type;ticket;order_type;lots;symbol;sl;tp";
    }
    
    string remainingLines[];
@@ -1026,10 +960,12 @@ void ProcessCSV()
       StringTrimRight(symbol);
       StringToUpper(symbol);
       
+      // Nuevo formato simplificado: event_type;ticket;order_type;lots;symbol;sl;tp
+      // indices: 0=event_type, 1=ticket, 2=order_type, 3=lots, 4=symbol, 5=sl, 6=tp
       double sl = 0.0;
       double tp = 0.0;
-      if(cnt > 7 && fields[7] != "") sl = StringToDouble(fields[7]);
-      if(cnt > 8 && fields[8] != "") tp = StringToDouble(fields[8]);
+      if(cnt > 5 && fields[5] != "") sl = StringToDouble(fields[5]);
+      if(cnt > 6 && fields[6] != "") tp = StringToDouble(fields[6]);
       
       if(StringLen(symbol) == 0 || StringLen(masterTicket) == 0)
          continue;
@@ -1039,8 +975,9 @@ void ProcessCSV()
       
       if(eventType == "OPEN")
       {
-         executedSuccessfully = ExecuteOpen(symbol, orderType, lots, sl, tp, masterTicket);
-         if(executedSuccessfully)
+         string errorMsg = "";
+         int result = ExecuteOpen(symbol, orderType, lots, sl, tp, masterTicket, errorMsg);
+         if(result == 1) // EXITOSO
          {
             PrintFormat("[OPEN] %s %s %.2f lots (maestro: %s)", 
                        symbol, orderType, lots, masterTicket);
@@ -1048,52 +985,42 @@ void ProcessCSV()
          }
          else
          {
-            AppendToHistory(line, "OMITIDO (ya existe en MT5)");
+            // Siempre escribir al histórico (éxito o fallo) y eliminar del CSV
+            AppendToHistory(line, errorMsg);
          }
       }
       else if(eventType == "CLOSE")
       {
          result = ExecuteClose(symbol, masterTicket);
-         if(result == 1) // EXITOSO
+         if(result == 1) // CLOSE OK
          {
             PrintFormat("[CLOSE] %s (maestro: %s)", symbol, masterTicket);
-            AppendToHistory(line, "EXITOSO");
-         }
-         else if(result == -1) // ERROR_RED_10031
-         {
-            PrintFormat("[CLOSE ERROR RED] %s (maestro: %s) - Manteniendo en CSV", 
-                       symbol, masterTicket);
-            ArrayResize(remainingLines, remainingCount + 1);
-            remainingLines[remainingCount] = line;
-            remainingCount++;
-            AppendToHistory(line, "ERROR RED 10031: Mantenido en CSV para reintento");
+            AppendToHistory(line, "CLOSE OK");
          }
          else if(result == 0) // NO_EXISTE
          {
-            AppendToHistory(line, "OMITIDO (ya existe en MT5)");
+            AppendToHistory(line, "No existe operacion abierta");
+         }
+         else if(result == 2) // FALLO
+         {
+            ArrayResize(remainingLines, remainingCount + 1);
+            remainingLines[remainingCount] = line;
+            remainingCount++;
+            AppendToHistory(line, "ERROR: Fallo al cerrar (reintento)");
          }
       }
       else if(eventType == "MODIFY")
       {
          result = ExecuteModify(symbol, sl, tp, masterTicket);
-         if(result == 1) // EXITOSO
+         if(result == 1) // MODIFY OK
          {
             PrintFormat("[MODIFY] %s SL=%.5f TP=%.5f (maestro: %s)", 
                        symbol, sl, tp, masterTicket);
-            AppendToHistory(line, "EXITOSO");
-         }
-         else if(result == -1) // ERROR_RED_10031
-         {
-            PrintFormat("[MODIFY ERROR RED] %s (maestro: %s) - Manteniendo en CSV", 
-                       symbol, masterTicket);
-            ArrayResize(remainingLines, remainingCount + 1);
-            remainingLines[remainingCount] = line;
-            remainingCount++;
-            AppendToHistory(line, "ERROR RED 10031: Mantenido en CSV para reintento");
+            AppendToHistory(line, "MODIFY OK");
          }
          else if(result == 0) // NO_EXISTE
          {
-            AppendToHistory(line, "OMITIDO (ya existe en MT5)");
+            AppendToHistory(line, "No existe operacion abierta");
          }
          else if(result == 2) // FALLO
          {
@@ -1127,7 +1054,7 @@ int OnInit()
    if(InpCuentaFondeo)
       PrintFormat("Multiplicador de lotaje: %.1fx", InpLotMultiplier);
    PrintFormat("Verificación: Solo MT5 (historial + abiertas)");
-   PrintFormat("Soporte codificaciones: UTF-8, UTF-8-sig, Windows-1252, Latin-1, CP1252");
+   PrintFormat("Codificación: UTF-8 exclusivamente");
    Print("Presiona Ctrl+C para detener");
    Print("------------------------------------------------------------");
    

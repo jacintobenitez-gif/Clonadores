@@ -9,6 +9,7 @@
 //|   v1.3: elimina campos magic y comment, usa FILE_TXT              |
 //|   v1.4: escribe en UTF-8 usando FILE_BIN                          |
 //|   v1.5: cambia OnTick() por OnTimer() para mayor eficiencia       |
+//|   v1.6: simplifica campos a: event_type;ticket;order_type;lots;symbol;sl;tp |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -112,6 +113,7 @@ void StringToUTF8Bytes(string str, uchar &bytes[])
 
 //+------------------------------------------------------------------+
 //| Escribe una línea en el TXT (apertura, cierre o modificación)    |
+//| v1.6: solo campos: event_type;ticket;order_type;lots;symbol;sl;tp |
 //| v1.4: escribe en UTF-8 usando FILE_BIN                           |
 //+------------------------------------------------------------------+
 void AppendEventToCSV(string eventType,
@@ -119,13 +121,8 @@ void AppendEventToCSV(string eventType,
                       string orderTypeStr,
                       double lots,
                       string symbol,
-                      double openPrice,
-                      datetime openTime,
                       double sl,
-                      double tp,
-                      double closePrice,
-                      datetime closeTime,
-                      double profit)
+                      double tp)
 {
    // Abrir archivo en modo binario para escribir UTF-8
    int handle = FileOpen(InpCSVFileName,
@@ -142,30 +139,18 @@ void AppendEventToCSV(string eventType,
    // Ir al final para añadir
    FileSeek(handle, 0, SEEK_END);
 
-   string sLots       = DoubleToString(lots, 2);
-   string sOpenPrice  = (openPrice  > 0.0 ? DoubleToString(openPrice,  Digits) : "");
-   string sClosePrice = (closePrice > 0.0 ? DoubleToString(closePrice, Digits) : "");
-   string sSL         = (sl > 0.0 ? DoubleToString(sl, Digits) : "");
-   string sTP         = (tp > 0.0 ? DoubleToString(tp, Digits) : "");
+   string sLots = DoubleToString(lots, 2);
+   string sSL   = (sl > 0.0 ? DoubleToString(sl, Digits) : "");
+   string sTP   = (tp > 0.0 ? DoubleToString(tp, Digits) : "");
 
-   string sOpenTime   = (openTime  > 0 ? TimeToStr(openTime,  TIME_DATE|TIME_SECONDS)  : "");
-   string sCloseTime  = (closeTime > 0 ? TimeToStr(closeTime, TIME_DATE|TIME_SECONDS)  : "");
-
-   string sProfit     = DoubleToString(profit, 2);
-
-   // Construir línea manualmente con delimitador ;
+   // Construir línea manualmente con delimitador ; (solo campos requeridos)
    string line = eventType + ";" +
                  IntegerToString(ticket) + ";" +
                  orderTypeStr + ";" +
                  sLots + ";" +
                  symbol + ";" +
-                 sOpenPrice + ";" +
-                 sOpenTime + ";" +
                  sSL + ";" +
-                 sTP + ";" +
-                 sClosePrice + ";" +
-                 sCloseTime + ";" +
-                 sProfit;
+                 sTP;
 
    // Convertir línea a UTF-8 y escribir
    uchar utf8Bytes[];
@@ -209,7 +194,7 @@ void InitCSVIfNeeded()
    }
 
    // Escribir cabecera en UTF-8
-   string header = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit";
+   string header = "event_type;ticket;order_type;lots;symbol;sl;tp";
    uchar utf8Bytes[];
    StringToUTF8Bytes(header, utf8Bytes);
    FileWriteArray(handle, utf8Bytes);
@@ -226,7 +211,7 @@ void InitCSVIfNeeded()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("Observador_Common v1.5 inicializado. TXT(COMMON) = ", InpCSVFileName);
+   Print("Observador_Common v1.6 inicializado. TXT(COMMON) = ", InpCSVFileName);
    Print("Timer: ", InpTimerSeconds, " segundos");
 
    g_prevCount   = 0;
@@ -306,13 +291,8 @@ void OnTimer()
                              tipo,
                              OrderLots(),
                              OrderSymbol(),
-                             OrderOpenPrice(),
-                             OrderOpenTime(),
                              OrderStopLoss(),
-                             OrderTakeProfit(),
-                             0.0,
-                             0,
-                             0.0);
+                             OrderTakeProfit());
 
             // Guardar estado inicial (SL/TP)
             g_prevTickets[k] = t;
@@ -359,13 +339,8 @@ void OnTimer()
                              tipo,
                              OrderLots(),
                              OrderSymbol(),
-                             OrderOpenPrice(),
-                             OrderOpenTime(),
                              OrderStopLoss(),
-                             OrderTakeProfit(),
-                             0.0,
-                             0,
-                             0.0);
+                             OrderTakeProfit());
             
             // Nota: El estado previo se guardará en la sección 4 al final
          }
@@ -414,13 +389,8 @@ void OnTimer()
                                    tipo,
                                    OrderLots(),
                                    OrderSymbol(),
-                                   OrderOpenPrice(),
-                                   OrderOpenTime(),
                                    currentSL,  // Nuevo SL
-                                   currentTP,  // Nuevo TP
-                                   0.0,
-                                   0,
-                                   0.0);
+                                   currentTP);  // Nuevo TP
                   
                   // Actualizar estado previo inmediatamente
                   g_prevOrders[prevIdx].sl = currentSL;
@@ -457,13 +427,8 @@ void OnTimer()
                              tipo,
                              OrderLots(),
                              OrderSymbol(),
-                             OrderOpenPrice(),
-                             OrderOpenTime(),
                              OrderStopLoss(),
-                             OrderTakeProfit(),
-                             OrderClosePrice(),
-                             OrderCloseTime(),
-                             OrderProfit());
+                             OrderTakeProfit());
          }
       }
    }
