@@ -1,5 +1,265 @@
 # Análisis Funcional Detallado: LectorOrdenes.mq4
 
+## Resumen Funcional Detallado
+
+### Propósito del Sistema
+
+`LectorOrdenes.mq4` es un **monitor de operaciones de trading** que actúa como **capturador de eventos** en MetaTrader 4. Su función principal es **detectar y registrar automáticamente** todos los cambios en las operaciones de trading (aperturas, cierres y modificaciones de SL/TP) y escribirlos en un archivo compartido que puede ser consumido por otros sistemas (como `ClonadorMQ5.py` o `ClonadorMQ5.mq5`) para realizar clonación automática de operaciones.
+
+### Flujo de Negocio Completo
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ CUENTA MAESTRA (MT4)                                            │
+│    - Trader ejecuta operaciones manualmente o mediante EA       │
+│    - Operaciones pueden ser:                                    │
+│      • Aperturas nuevas (OPEN)                                  │
+│      • Cierres de posiciones (CLOSE)                           │
+│      • Modificaciones de SL/TP (MODIFY)                        │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ LECTORORDENES.MQ4 (Expert Advisor)                             │
+│    - Se ejecuta en un gráfico de MT4                            │
+│    - Monitorea cambios cada 1 segundo (OnTimer)                 │
+│    - Compara estado actual vs estado previo                     │
+│    - Detecta diferencias y genera eventos                       │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ ARCHIVO COMPARTIDO (TradeEvents.txt)                           │
+│    - Ubicación: COMMON\Files\TradeEvents.txt                    │
+│    - Formato: event_type;ticket;order_type;lots;symbol;sl;tp   │
+│    - Codificación: UTF-8                                        │
+│    - Ejemplos escritos:                                         │
+│      • OPEN;39924291;BUY;0.04;XAUUSD;4288.04;4290.00           │
+│      • CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800           │
+│      • MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00         │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ SISTEMAS CONSUMIDORES                                          │
+│    - ClonadorMQ5.py (Python)                                    │
+│    - ClonadorMQ5.mq5 (MQL5)                                     │
+│    - Cualquier otro sistema que lea TradeEvents.txt            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Tipos de Eventos Generados
+
+#### 1. OPEN (Apertura de Posición)
+
+**Cuándo se detecta**:
+- **Primera ejecución**: Para todas las órdenes ya abiertas al iniciar el EA (sincronización inicial)
+- **Ejecuciones posteriores**: Cuando se detecta una nueva orden que no estaba en el ciclo anterior
+
+**Datos capturados**:
+- Ticket maestro (identificador único de la orden)
+- Tipo de orden (BUY, SELL, BUYLIMIT, SELLLIMIT, BUYSTOP, SELLSTOP)
+- Volumen (lots)
+- Símbolo del instrumento
+- Stop Loss actual
+- Take Profit actual
+
+**Ejemplo de evento**:
+```
+OPEN;39924291;BUY;0.04;XAUUSD;4288.04;4290.00
+```
+
+**Propósito de negocio**: Notificar a sistemas externos que se ha abierto una nueva posición para que puedan clonarla.
+
+---
+
+#### 2. CLOSE (Cierre de Posición)
+
+**Cuándo se detecta**:
+- Cuando una orden que estaba abierta en el ciclo anterior ya no aparece en la lista de órdenes abiertas
+
+**Datos capturados**:
+- Ticket maestro
+- Tipo de orden
+- Volumen cerrado
+- Símbolo
+- Stop Loss al momento del cierre
+- Take Profit al momento del cierre
+
+**Ejemplo de evento**:
+```
+CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800
+```
+
+**Propósito de negocio**: Notificar a sistemas externos que se ha cerrado una posición para que puedan cerrar la posición clonada correspondiente.
+
+**Nota técnica**: Los datos se obtienen del historial de MT4 (`MODE_HISTORY`) para asegurar información completa del cierre.
+
+---
+
+#### 3. MODIFY (Modificación de SL/TP)
+
+**Cuándo se detecta**:
+- Cuando se detecta un cambio en Stop Loss o Take Profit de una orden que ya existía
+
+**Datos capturados**:
+- Ticket maestro
+- Tipo de orden
+- Volumen actual
+- Símbolo
+- **Nuevo** Stop Loss
+- **Nuevo** Take Profit
+
+**Ejemplo de evento**:
+```
+MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00
+```
+
+**Propósito de negocio**: Notificar a sistemas externos que se han modificado los niveles de SL/TP para que puedan actualizar la posición clonada correspondiente.
+
+**Tolerancia**: Se usa una tolerancia de 0.00001 para evitar falsos positivos por redondeo de punto flotante.
+
+---
+
+### Proceso de Detección
+
+#### Ciclo de Monitoreo (cada 1 segundo)
+
+1. **Lectura del estado actual**:
+   - Obtiene todas las órdenes abiertas (`MODE_TRADES`)
+   - Almacena tickets y estados (SL/TP) en arrays temporales
+
+2. **Comparación con estado previo**:
+   - Compara tickets actuales vs tickets previos
+   - Compara SL/TP actuales vs SL/TP previos
+
+3. **Detección de cambios**:
+   - **Nuevos tickets** → Genera evento OPEN
+   - **Tickets que ya no están** → Genera evento CLOSE
+   - **SL/TP diferentes** → Genera evento MODIFY
+
+4. **Actualización del estado previo**:
+   - Guarda el estado actual para la próxima comparación
+
+#### Primera Ejecución (Sincronización Inicial)
+
+- **Comportamiento especial**: Al iniciar el EA, escribe eventos OPEN para todas las órdenes ya abiertas
+- **Propósito**: Sincronizar el estado inicial con sistemas externos
+- **Ventaja**: Los sistemas consumidores conocen todas las posiciones abiertas desde el inicio
+
+---
+
+### Características Clave del Sistema
+
+#### 1. Monitoreo en Tiempo Real
+- **Frecuencia**: Cada 1 segundo (configurable)
+- **Método**: `OnTimer()` en lugar de `OnTick()` para mayor eficiencia
+- **Ventaja**: No consume recursos en cada movimiento de precio, solo periódicamente
+
+#### 2. Detección Inteligente de Cambios
+- **Comparación de estados**: Mantiene estado previo en memoria para comparar
+- **Tolerancia para SL/TP**: Evita falsos positivos por redondeo
+- **Actualización inmediata**: Después de detectar MODIFY, actualiza el estado previo
+
+#### 3. Escritura Robusta
+- **Modo append**: Añade eventos al final del archivo sin sobrescribir
+- **Acceso compartido**: Múltiples instancias pueden escribir simultáneamente
+- **Codificación UTF-8**: Compatible con todos los sistemas consumidores
+
+#### 4. Manejo de Errores
+- **No bloqueante**: Si hay error al escribir, no detiene el EA
+- **Continúa funcionando**: El EA sigue monitoreando aunque falle una escritura
+- **Mensajes informativos**: Imprime errores para diagnóstico
+
+---
+
+### Formato de Datos
+
+#### Estructura del Archivo
+
+**Cabecera** (primera línea):
+```
+event_type;ticket;order_type;lots;symbol;sl;tp
+```
+
+**Líneas de eventos**:
+```
+OPEN;39924291;BUY;0.04;XAUUSD;4288.04;4290.00
+CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800
+MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00
+```
+
+**Campos**:
+- `event_type`: Tipo de evento (OPEN, CLOSE, MODIFY)
+- `ticket`: Ticket maestro (identificador único de MT4)
+- `order_type`: Tipo de orden (BUY, SELL, BUYLIMIT, SELLLIMIT, BUYSTOP, SELLSTOP)
+- `lots`: Volumen de la operación
+- `symbol`: Símbolo del instrumento (ej: XAUUSD, EURUSD)
+- `sl`: Stop Loss (vacío si no tiene)
+- `tp`: Take Profit (vacío si no tiene)
+
+**Delimitador**: Punto y coma (`;`)  
+**Codificación**: UTF-8 (sin BOM)  
+**Salto de línea**: `\n` (LF, 0x0A)
+
+---
+
+### Casos de Uso Típicos
+
+#### Caso 1: Clonación Simple MT4 → MT5
+- **Escenario**: Trader opera en MT4, quiere replicar operaciones en MT5
+- **Proceso**: 
+  1. `LectorOrdenes.mq4` detecta cambios en MT4
+  2. Escribe eventos a `TradeEvents.txt`
+  3. `ClonadorMQ5.py` lee y clona operaciones en MT5
+- **Resultado**: Operaciones sincronizadas entre ambas plataformas
+
+#### Caso 2: Múltiples Cuentas Maestras
+- **Escenario**: Varias cuentas MT4 escriben al mismo archivo
+- **Proceso**: Múltiples instancias de `LectorOrdenes.mq4` escriben simultáneamente
+- **Resultado**: Un solo archivo con eventos de todas las cuentas maestras
+
+#### Caso 3: Sistema de Auditoría
+- **Escenario**: Necesidad de registrar todos los cambios en operaciones
+- **Proceso**: `LectorOrdenes.mq4` genera registro completo de eventos
+- **Resultado**: Trazabilidad completa de todas las operaciones
+
+---
+
+### Ventajas del Sistema
+
+1. **Automatización Completa**: No requiere intervención manual para capturar eventos
+2. **Tiempo Real**: Detecta cambios en 1 segundo
+3. **Robustez**: Maneja errores sin detener el monitoreo
+4. **Eficiencia**: Usa timer en lugar de OnTick() para reducir carga
+5. **Compatibilidad**: Formato UTF-8 compatible con múltiples sistemas
+6. **Escalabilidad**: Múltiples instancias pueden escribir simultáneamente
+7. **Simplicidad**: Formato de datos simple y fácil de procesar
+
+---
+
+### Limitaciones y Consideraciones
+
+#### Limitación de Órdenes
+- **Máximo**: 500 órdenes simultáneas
+- **Razón**: Arrays de tamaño fijo para eficiencia
+- **Impacto**: Si hay más de 500 órdenes, las adicionales no se monitorean
+
+#### Tolerancia de Cambios
+- **Valor**: 0.00001 para SL/TP
+- **Propósito**: Evitar falsos positivos por redondeo
+- **Impacto**: Cambios menores a 0.00001 no se detectan como MODIFY
+
+#### Primera Ejecución
+- **Comportamiento**: Escribe OPEN para todas las órdenes ya abiertas
+- **Impacto**: Puede generar muchos eventos al iniciar si hay muchas posiciones abiertas
+
+#### Dependencia del Historial
+- **Para CLOSE**: Requiere acceso al historial de MT4
+- **Impacto**: Si el historial no está disponible, no se pueden obtener datos completos del cierre
+
+---
+
 ## Información General
 
 - **Versión**: 1.6
