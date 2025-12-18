@@ -796,28 +796,34 @@ int ExecuteClose(string symbol, string masterTicket) // Retorna: 1=éxito, 0=no 
    request.type_time = ORDER_TIME_GTC;
    request.type_filling = ORDER_FILLING_FOK;
    
-   if(!OrderSend(request, result))
-   {
-      PrintFormat("[ERROR CLOSE] %s: retcode=%d comment=%s", 
-                  symbol, result.retcode, result.comment);
-      return 0;
-   }
+   // Enviar orden
+   bool sent = OrderSend(request, result);
    
+   // Verificar resultado
    if(result.retcode == TRADE_RETCODE_DONE)
    {
       return 1; // EXITOSO
    }
    
-   // Detectar error 10031
+   // Detectar error 10031 (ausencia de conexión de red) - puede ocurrir incluso si OrderSend retorna false
    if(result.retcode == 10031)
    {
-      PrintFormat("[CLOSE ERROR RED] %s (maestro: %s) - Manteniendo en CSV para reintento", 
+      PrintFormat("[CLOSE ERROR RED] %s (maestro: %s): retcode=10031 - Manteniendo en CSV para reintento", 
                   symbol, masterTicket);
       return -1; // ERROR_RED_10031
    }
    
-   PrintFormat("[ERROR CLOSE] %s: retcode=%d comment=%s", 
-               symbol, result.retcode, result.comment);
+   // Otros errores
+   if(!sent)
+   {
+      PrintFormat("[ERROR CLOSE] %s (maestro: %s): retcode=%d comment=%s", 
+                  symbol, masterTicket, result.retcode, result.comment);
+   }
+   else
+   {
+      PrintFormat("[ERROR CLOSE] %s (maestro: %s): retcode=%d comment=%s", 
+                  symbol, masterTicket, result.retcode, result.comment);
+   }
    return 0;
 }
 
@@ -851,28 +857,34 @@ int ExecuteModify(string symbol, double sl, double tp, string masterTicket)
    request.tp = (tp > 0 ? tp : 0);
    request.comment = masterTicket;
    
-   if(!OrderSend(request, result))
-   {
-      PrintFormat("[ERROR MODIFY] %s: retcode=%d comment=%s", 
-                  symbol, result.retcode, result.comment);
-      return 2; // FALLO
-   }
+   // Enviar orden
+   bool sent = OrderSend(request, result);
    
+   // Verificar resultado - IMPORTANTE: verificar retcode incluso si OrderSend retorna false
    if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_NO_CHANGES)
    {
       return 1; // EXITOSO
    }
    
-   // Detectar error 10031
+   // Detectar error 10031 (ausencia de conexión de red) - puede ocurrir incluso si OrderSend retorna false
    if(result.retcode == 10031)
    {
-      PrintFormat("[MODIFY ERROR RED] %s (maestro: %s) - Manteniendo en CSV para reintento", 
+      PrintFormat("[MODIFY ERROR RED] %s (maestro: %s): retcode=10031 - Manteniendo en CSV para reintento", 
                   symbol, masterTicket);
       return -1; // ERROR_RED_10031
    }
    
-   PrintFormat("[ERROR MODIFY] %s: retcode=%d comment=%s", 
-               symbol, result.retcode, result.comment);
+   // Otros errores
+   if(!sent)
+   {
+      PrintFormat("[ERROR MODIFY] %s (maestro: %s): retcode=%d comment=%s", 
+                  symbol, masterTicket, result.retcode, result.comment);
+   }
+   else
+   {
+      PrintFormat("[ERROR MODIFY] %s (maestro: %s): retcode=%d comment=%s", 
+                  symbol, masterTicket, result.retcode, result.comment);
+   }
    return 2; // FALLO
 }
 
