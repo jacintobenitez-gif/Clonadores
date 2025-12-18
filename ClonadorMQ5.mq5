@@ -28,6 +28,8 @@ enum ENCODING_TYPE
 {
    ENCODING_UTF8,
    ENCODING_UTF8_SIG,
+   ENCODING_UTF16_LE,
+   ENCODING_UTF16_BE,
    ENCODING_WINDOWS_1252,
    ENCODING_LATIN1,
    ENCODING_CP1252,
@@ -37,7 +39,20 @@ enum ENCODING_TYPE
 ENCODING_TYPE DetectEncoding(uchar &bytes[])
 {
    int size = ArraySize(bytes);
-   if(size < 3) return ENCODING_WINDOWS_1252; // Por defecto
+   if(size < 2) return ENCODING_WINDOWS_1252; // Por defecto
+   
+   // Detectar UTF-16 BOM (FF FE = LE, FE FF = BE)
+   if(size >= 2)
+   {
+      if(bytes[0] == 0xFF && bytes[1] == 0xFE)
+      {
+         return ENCODING_UTF16_LE;
+      }
+      if(bytes[0] == 0xFE && bytes[1] == 0xFF)
+      {
+         return ENCODING_UTF16_BE;
+      }
+   }
    
    // Detectar UTF-8 BOM (EF BB BF)
    if(size >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
@@ -186,6 +201,56 @@ string UTF8ToString(uchar &bytes[], int startPos = 0, int skipBOM = 0)
 }
 
 //+------------------------------------------------------------------+
+//| Convertir UTF-16 LE a string (MQL5 usa UTF-16 internamente)      |
+//+------------------------------------------------------------------+
+string UTF16LEToString(uchar &bytes[], int startPos = 0, int skipBOM = 0)
+{
+   string result = "";
+   int size = ArraySize(bytes);
+   int pos = startPos + skipBOM;
+   
+   // UTF-16 LE: cada carácter son 2 bytes (little-endian)
+   while(pos + 1 < size)
+   {
+      // Leer 2 bytes como ushort (little-endian)
+      ushort ch = (ushort)(bytes[pos] | (bytes[pos + 1] << 8));
+      
+      if(ch == 0) break; // Fin de string
+      if(ch == 0x0A || ch == 0x0D) break; // Salto de línea
+      
+      result += ShortToString(ch);
+      pos += 2;
+   }
+   
+   return result;
+}
+
+//+------------------------------------------------------------------+
+//| Convertir UTF-16 BE a string (MQL5 usa UTF-16 internamente)      |
+//+------------------------------------------------------------------+
+string UTF16BEToString(uchar &bytes[], int startPos = 0, int skipBOM = 0)
+{
+   string result = "";
+   int size = ArraySize(bytes);
+   int pos = startPos + skipBOM;
+   
+   // UTF-16 BE: cada carácter son 2 bytes (big-endian)
+   while(pos + 1 < size)
+   {
+      // Leer 2 bytes como ushort (big-endian)
+      ushort ch = (ushort)((bytes[pos] << 8) | bytes[pos + 1]);
+      
+      if(ch == 0) break; // Fin de string
+      if(ch == 0x0A || ch == 0x0D) break; // Salto de línea
+      
+      result += ShortToString(ch);
+      pos += 2;
+   }
+   
+   return result;
+}
+
+//+------------------------------------------------------------------+
 //| Convertir Windows-1252/Latin-1 a string                          |
 //+------------------------------------------------------------------+
 string Windows1252ToString(uchar &bytes[], int startPos = 0)
@@ -226,22 +291,54 @@ bool ReadFileWithEncoding(string filename, string &lines[])
    if(handle == INVALID_HANDLE)
    {
       int err = GetLastError();
-      if(err != 4103) // 4103 = archivo no existe
-         PrintFormat("[ERROR] No se pudo abrir '%s'. Error=%d", filename, err);
+      if(err == 4103) // 4103 = archivo no existe
+      {
+         PrintFormat("[ERROR LECTURA] El archivo no existe: '%s' (Error=%d)", filename, err);
+      }
+      else
+      {
+         PrintFormat("[ERROR LECTURA] No se pudo abrir '%s'. Error=%d", filename, err);
+      }
       return false;
    }
    
    // Leer todos los bytes
    uchar bytes[];
    int fileSize = (int)FileSize(handle);
+   if(fileSize <= 0)
+   {
+      FileClose(handle);
+      PrintFormat("[ERROR LECTURA] El archivo está vacío: '%s' (tamaño=%d)", filename, fileSize);
+      return false;
+   }
+   
    ArrayResize(bytes, fileSize);
-   FileReadArray(handle, bytes, 0, fileSize);
+   uint bytesRead = FileReadArray(handle, bytes, 0, fileSize);
    FileClose(handle);
    
-   if(fileSize == 0) return false;
+   if(bytesRead != fileSize)
+   {
+      PrintFormat("[ERROR LECTURA] Error al leer archivo '%s': leídos %d de %d bytes", filename, bytesRead, fileSize);
+      return false;
+   }
    
    // Detectar codificación
    ENCODING_TYPE encoding = DetectEncoding(bytes);
+   
+   // Traza informativa de la codificación detectada (solo para depuración, no se muestra)
+   // string encodingStr = "";
+   // switch(encoding)
+   // {
+   //    case ENCODING_UTF8: encodingStr = "UTF-8"; break;
+   //    case ENCODING_UTF8_SIG: encodingStr = "UTF-8 (con BOM)"; break;
+   //    case ENCODING_UTF16_LE: encodingStr = "UTF-16-LE"; break;
+   //    case ENCODING_UTF16_BE: encodingStr = "UTF-16-BE"; break;
+   //    case ENCODING_WINDOWS_1252: encodingStr = "Windows-1252"; break;
+   //    case ENCODING_LATIN1: encodingStr = "Latin-1"; break;
+   //    case ENCODING_CP1252: encodingStr = "CP1252"; break;
+   //    default: encodingStr = "Desconocida"; break;
+   // }
+   // PrintFormat("[INFO LECTURA] Archivo '%s' detectado como %s (tamaño=%d bytes)", filename, encodingStr, fileSize);
    
    // Convertir bytes a líneas según codificación
    int lineStart = 0;
@@ -249,10 +346,78 @@ bool ReadFileWithEncoding(string filename, string &lines[])
    
    if(encoding == ENCODING_UTF8_SIG)
    {
-      bomSkip = 3; // Saltar BOM
+      bomSkip = 3; // Saltar BOM UTF-8
       encoding = ENCODING_UTF8;
    }
+   else if(encoding == ENCODING_UTF16_LE || encoding == ENCODING_UTF16_BE)
+   {
+      bomSkip = 2; // Saltar BOM UTF-16
+   }
    
+   // Manejar UTF-16 de manera especial (cada carácter son 2 bytes)
+   if(encoding == ENCODING_UTF16_LE || encoding == ENCODING_UTF16_BE)
+   {
+      int pos = lineStart + bomSkip;
+      
+      while(pos + 1 < fileSize)
+      {
+         string line = "";
+         int lineStartPos = pos;
+         
+         // Leer caracteres hasta encontrar salto de línea o fin de archivo
+         while(pos + 1 < fileSize)
+         {
+            ushort ch;
+            if(encoding == ENCODING_UTF16_LE)
+               ch = (ushort)(bytes[pos] | (bytes[pos + 1] << 8));
+            else
+               ch = (ushort)((bytes[pos] << 8) | bytes[pos + 1]);
+            
+            if(ch == 0) break; // Fin de string
+            if(ch == 0x000A || ch == 0x000D) // LF o CR
+            {
+               pos += 2; // Saltar el carácter de salto de línea
+               if(ch == 0x000D && pos + 1 < fileSize)
+               {
+                  // Verificar si es CRLF
+                  ushort nextCh;
+                  if(encoding == ENCODING_UTF16_LE)
+                     nextCh = (ushort)(bytes[pos] | (bytes[pos + 1] << 8));
+                  else
+                     nextCh = (ushort)((bytes[pos] << 8) | bytes[pos + 1]);
+                  if(nextCh == 0x000A)
+                     pos += 2; // Saltar LF también
+               }
+               break;
+            }
+            
+            line += ShortToString(ch);
+            pos += 2;
+         }
+         
+         // Limpiar línea y agregar si no está vacía
+         StringTrimLeft(line);
+         StringTrimRight(line);
+         if(StringLen(line) > 0)
+         {
+            int count = ArraySize(lines);
+            ArrayResize(lines, count + 1);
+            lines[count] = line;
+         }
+         
+         if(pos >= fileSize) break;
+      }
+      
+      int totalLines = ArraySize(lines);
+      if(totalLines == 0)
+      {
+         PrintFormat("[WARNING LECTURA] Archivo '%s' no contiene líneas válidas después del procesamiento", filename);
+      }
+      
+      return true;
+   }
+   
+   // Manejar UTF-8 y Windows-1252 (formato byte por byte)
    while(lineStart < fileSize)
    {
       string line = "";
@@ -325,6 +490,12 @@ bool ReadFileWithEncoding(string filename, string &lines[])
       
       lineStart = lineEnd;
       if(lineStart >= fileSize) break;
+   }
+   
+   int totalLines = ArraySize(lines);
+   if(totalLines == 0)
+   {
+      PrintFormat("[WARNING LECTURA] Archivo '%s' no contiene líneas válidas después del procesamiento", filename);
    }
    
    return true;
@@ -779,12 +950,41 @@ void ProcessCSV()
    
    if(ArraySize(lines) == 0) return;
    
-   string header = lines[0];
+   // Detectar si la primera línea es header o es un evento
+   string header = "";
+   int startIdx = 0;
+   
+   if(ArraySize(lines) > 0)
+   {
+      string firstLine = lines[0];
+      StringTrimLeft(firstLine);
+      StringTrimRight(firstLine);
+      StringToUpper(firstLine);
+      
+      // Si la primera línea parece ser un header (contiene "event_type" o "ticket")
+      if(StringFind(firstLine, "EVENT_TYPE") >= 0 || StringFind(firstLine, "TICKET") >= 0)
+      {
+         header = lines[0];
+         startIdx = 1;
+      }
+      else
+      {
+         // No hay header, usar header por defecto
+         header = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit";
+         startIdx = 0;
+      }
+   }
+   else
+   {
+      // Archivo vacío, usar header por defecto
+      header = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit";
+   }
+   
    string remainingLines[];
    int remainingCount = 0;
    
-   // Procesar cada línea (empezando desde línea 1, saltando header)
-   for(int i = 1; i < ArraySize(lines); i++)
+   // Procesar cada línea (empezando desde startIdx)
+   for(int i = startIdx; i < ArraySize(lines); i++)
    {
       string line = lines[i];
       if(StringLen(line) < 5) continue;
@@ -894,11 +1094,12 @@ void ProcessCSV()
    }
    
    // Reescribir CSV solo con líneas pendientes
-   if(remainingCount != ArraySize(lines) - 1)
+   int totalProcessed = ArraySize(lines) - startIdx;
+   if(remainingCount != totalProcessed)
    {
       WriteCSV(InpCSVFileName, header, remainingLines);
-      PrintFormat("[CSV] Actualizado: %d líneas pendientes (de %d totales)", 
-                 remainingCount, ArraySize(lines) - 1);
+      PrintFormat("[CSV] Actualizado: %d líneas pendientes (de %d totales procesadas)", 
+                 remainingCount, totalProcessed);
    }
 }
 

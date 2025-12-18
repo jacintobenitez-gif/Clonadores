@@ -313,23 +313,71 @@ def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
     events: list[Ev] = []
     lines: list[str] = []
     
-    # Intentar diferentes codificaciones
-    encodings = ["utf-8", "utf-8-sig", "windows-1252", "latin-1", "cp1252"]
+    # Verificar si el archivo existe
+    if not os.path.exists(path):
+        print(f"[ERROR LECTURA] El archivo no existe: {path}")
+        raise RuntimeError(f"El archivo no existe: {path}")
+    
+    # Verificar si el archivo está vacío
+    if os.path.getsize(path) == 0:
+        print(f"[ERROR LECTURA] El archivo está vacío: {path}")
+        return events, lines, ""
+    
+    # Leer archivo como binario primero para detectar codificación
+    try:
+        with open(path, "rb") as file_handle:
+            raw_content = file_handle.read()
+    except IOError as e:
+        print(f"[ERROR LECTURA] No se pudo abrir el archivo {path}: {e}")
+        raise RuntimeError(f"No se pudo abrir el archivo {path}: {e}")
+    except Exception as e:
+        print(f"[ERROR LECTURA] Error inesperado al leer {path}: {e}")
+        raise RuntimeError(f"Error inesperado al leer {path}: {e}")
+    
+    if len(raw_content) == 0:
+        print(f"[ERROR LECTURA] El archivo está vacío después de leer: {path}")
+        return events, lines, ""
+    
     file_content = None
     used_encoding = None
     
-    for enc in encodings:
-        try:
-            with open(path, "rb") as file_handle:
-                raw_content = file_handle.read()
-            file_content = raw_content.decode(enc)
-            used_encoding = enc
-            break
-        except (UnicodeDecodeError, UnicodeError):
-            continue
+    # Detectar UTF-16 por BOM
+    if len(raw_content) >= 2:
+        bom = raw_content[:2]
+        if bom == b'\xff\xfe':  # UTF-16-LE BOM
+            try:
+                file_content = raw_content.decode('utf-16-le')
+                used_encoding = 'utf-16-le'
+            except (UnicodeDecodeError, UnicodeError) as e:
+                print(f"[ERROR LECTURA] Fallo al decodificar UTF-16-LE en {path}: {e}")
+        elif bom == b'\xfe\xff':  # UTF-16-BE BOM
+            try:
+                file_content = raw_content.decode('utf-16-be')
+                used_encoding = 'utf-16-be'
+            except (UnicodeDecodeError, UnicodeError) as e:
+                print(f"[ERROR LECTURA] Fallo al decodificar UTF-16-BE en {path}: {e}")
+    
+    # Si no es UTF-16, intentar otras codificaciones
+    if file_content is None:
+        encodings = ["utf-8", "utf-8-sig", "windows-1252", "latin-1", "cp1252"]
+        for enc in encodings:
+            try:
+                file_content = raw_content.decode(enc)
+                used_encoding = enc
+                break
+            except (UnicodeDecodeError, UnicodeError) as e:
+                print(f"[ERROR LECTURA] Fallo al decodificar {enc} en {path}: {e}")
+                continue
     
     if file_content is None:
+        print(f"[ERROR LECTURA CRÍTICO] No se pudo decodificar el archivo {path} con ninguna codificación conocida")
+        print(f"[ERROR LECTURA] Tamaño del archivo: {len(raw_content)} bytes")
+        print(f"[ERROR LECTURA] Primeros 20 bytes (hex): {raw_content[:20].hex()}")
         raise RuntimeError(f"No se pudo decodificar el archivo {path} con ninguna codificación conocida")
+    
+    # Limpiar BOM si existe
+    if file_content.startswith('\ufeff'):
+        file_content = file_content[1:]
     
     # Dividir en líneas
     all_lines = file_content.splitlines()
@@ -337,10 +385,22 @@ def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
     if not all_lines:
         return events, lines, ""
     
-    header = all_lines[0]
+    # Detectar si la primera línea es header o es un evento
+    first_line = all_lines[0].strip()
+    header_line = ""
+    start_idx = 0
     
-    # Parsear cada línea (empezando desde la línea 1, saltando header)
-    for line in all_lines[1:]:
+    # Si la primera línea parece ser un header (contiene "event_type" o "ticket")
+    if "event_type" in first_line.lower() or "ticket" in first_line.lower():
+        header_line = first_line
+        start_idx = 1
+    else:
+        # No hay header, usar header por defecto
+        header_line = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit"
+        start_idx = 0
+    
+    # Parsear cada línea (empezando desde start_idx)
+    for line in all_lines[start_idx:]:
         line = line.strip()
         if not line:
             continue
@@ -367,7 +427,7 @@ def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
         lines.append(line)
         events.append(Ev(et, master_ticket, ot, lots, sym, sl, tp))
     
-    return events, lines, header
+    return events, lines, header_line
 
 def common_files_csv_path(csv_name: str) -> str:
     ti = mt5.terminal_info()
@@ -462,7 +522,16 @@ def main_loop():
             try:
                 if os.path.exists(path) and os.path.getsize(path) > 0:
                     # Leer eventos y líneas originales
-                    events, lines, header = read_events_from_csv(path)
+                    events: list[Ev] = []
+                    lines: list[str] = []
+                    header: str = "event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit"
+                    
+                    try:
+                        events, lines, header = read_events_from_csv(path)
+                    except Exception as e:
+                        print(f"[ERROR LECTURA] Error al leer archivo {path}: {e}")
+                        time.sleep(TIMER_SECONDS)
+                        continue
                     
                     # Líneas que se mantendrán en el CSV principal (no procesadas exitosamente)
                     remaining_lines: list[str] = []
