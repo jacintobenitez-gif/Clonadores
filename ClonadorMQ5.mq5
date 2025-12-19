@@ -18,7 +18,7 @@ input int    InpTimerSeconds = 1;                 // Timer en segundos
 input int    InpSlippagePoints = 30;              // Slippage en puntos
 input bool   InpCuentaFondeo = true;              // Cuenta de fondeo (copia lots)
 input double InpFixedLots = 0.10;                 // Lote fijo si NO es fondeo
-input double InpLotMultiplier = 1.0;              // Multiplicador de lotaje (1x, 2x, 3x)
+input double InpLotMultiplier = 1.0;              // Multiplicador de lotaje (1x, 2x, 3x, 4x)
 input int    InpMagic = 0;                        // Magic number
 
 //+------------------------------------------------------------------+

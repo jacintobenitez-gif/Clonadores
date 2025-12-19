@@ -56,7 +56,7 @@
 2. **Verifica y reconecta automáticamente** con MT5 si es necesario (`ensure_mt5_connection()`)
 3. **Se ejecuta directamente** sin verificaciones previas (el ticket del origen es único)
 4. Calcula el lotaje esclavo:
-   - Si `CUENTA_FONDEO = True`: `lotaje_esclavo = lotaje_maestro × multiplicador` (1x, 2x o 3x)
+   - Si `CUENTA_FONDEO = True`: `lotaje_esclavo = lotaje_maestro × multiplicador` (1x, 2x, 3x o 4x)
    - Si `CUENTA_FONDEO = False`: Usa `FIXED_LOTS` ajustado a los límites del símbolo
 5. Ejecuta la orden de mercado en MT5 (BUY o SELL)
 6. **Resultado**:
@@ -151,10 +151,11 @@
 #### Modo Fondeo (`CUENTA_FONDEO = True`)
 
 - **Comportamiento**: Copia el lotaje del maestro aplicando un multiplicador
-- **Multiplicadores disponibles**: 1x, 2x, 3x (configurado al inicio del script)
+- **Multiplicadores disponibles**: 1x, 2x, 3x, 4x (configurado al inicio del script)
 - **Ejemplo**: 
   - Maestro abre 0.04 lots con multiplicador 2x → Esclavo abre 0.08 lots
   - Maestro abre 0.10 lots con multiplicador 3x → Esclavo abre 0.30 lots
+  - Maestro abre 0.05 lots con multiplicador 4x → Esclavo abre 0.20 lots
 
 #### Modo Lote Fijo (`CUENTA_FONDEO = False`)
 
@@ -239,7 +240,7 @@ timestamp_ejecucion;resultado;event_type;ticket;order_type;lots;symbol;sl;tp
 
 1. **Inicialización** (`main_loop()`)
    - Conecta a MT5
-   - Si `CUENTA_FONDEO = True`: Solicita multiplicador de lotaje al usuario (1x, 2x, 3x)
+   - Si `CUENTA_FONDEO = True`: Solicita multiplicador de lotaje al usuario (1x, 2x, 3x, 4x)
    - Configura rutas de archivos
 
 2. **Bucle Principal** (`main_loop()`)
@@ -272,7 +273,7 @@ LOT_MULTIPLIER = 1.0                      # Multiplicador de lotaje (configurado
 
 **Parámetros clave**:
 - `CUENTA_FONDEO`: Determina si se copia el lotaje del maestro o se usa un lote fijo
-- `LOT_MULTIPLIER`: Multiplicador aplicado al lotaje maestro (1x, 2x, 3x)
+- `LOT_MULTIPLIER`: Multiplicador aplicado al lotaje maestro (1x, 2x, 3x, 4x)
 - `TIMER_SECONDS`: Frecuencia de lectura del archivo (1 segundo)
 
 ---
@@ -909,7 +910,8 @@ C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\TradeEve
        print("  1. Multiplicar por 1 (lotaje original)")
        print("  2. Multiplicar por 2 (doble del lotaje)")
        print("  3. Multiplicar por 3 (triple del lotaje)")
-       opcion = input("Ingrese su opción (1, 2 o 3): ").strip()
+       print("  4. Multiplicar por 4 (cuádruple del lotaje)")
+       opcion = input("Ingrese su opción (1, 2, 3 o 4): ").strip()
        # Configura LOT_MULTIPLIER según opción
    ```
    - Muestra menú interactivo
@@ -1155,6 +1157,7 @@ Si `CUENTA_FONDEO = True`, al iniciar se solicita:
 - **Opción 1**: Multiplicar por 1 (lotaje original)
 - **Opción 2**: Multiplicar por 2 (doble del lotaje)
 - **Opción 3**: Multiplicar por 3 (triple del lotaje)
+- **Opción 4**: Multiplicar por 4 (cuádruple del lotaje)
 
 ---
 

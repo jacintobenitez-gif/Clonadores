@@ -95,6 +95,8 @@ CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800
 
 **Nota técnica**: Los datos se obtienen del historial de MT4 (`MODE_HISTORY`) para asegurar información completa del cierre.
 
+**Sistema de reintento (v1.7)**: Si un ticket cerrado no está disponible inmediatamente en el historial (por ejemplo, cuando múltiples operaciones se cierran simultáneamente), el sistema mantiene el ticket en una cola de pendientes y reintenta escribirlo en los siguientes ciclos hasta que tenga éxito. Esto garantiza que ningún evento CLOSE se pierda, incluso en condiciones de alta carga o cuando MT4 tiene delays en actualizar el historial.
+
 ---
 
 #### 3. MODIFY (Modificación de SL/TP)
@@ -262,7 +264,7 @@ MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00
 
 ## Información General
 
-- **Versión**: 1.6
+- **Versión**: 1.7
 - **Tipo**: Expert Advisor (EA) para MetaTrader 4
 - **Propósito**: Monitorear operaciones en MT4 y escribir eventos (OPEN, CLOSE, MODIFY) en un archivo compartido
 - **Archivo de salida**: `TradeEvents.txt` (en carpeta COMMON\Files)
@@ -305,10 +307,12 @@ struct OrderState
 **Propósito**: Almacenar el estado previo de cada orden para detectar cambios en SL/TP.
 
 #### Arrays Globales
-- `g_prevTickets[MAX_ORDERS]`: Lista de tickets abiertos en el ciclo anterior
+- `g_prevTickets[MAX_ORDERS]`: Lista de tickets abiertos en el ciclo anterior (v1.7: incluye también tickets pendientes)
 - `g_prevOrders[MAX_ORDERS]`: Estado completo (SL/TP) de cada orden
 - `g_prevCount`: Contador de órdenes previas
 - `g_initialized`: Flag para evitar disparar eventos en el primer ciclo
+- `g_pendingCloseTickets[MAX_ORDERS]`: Tickets pendientes de escribir evento CLOSE (v1.7)
+- `g_pendingCloseCount`: Contador de tickets pendientes (v1.7)
 
 ---
 
@@ -354,6 +358,53 @@ struct OrderState
 **Uso**: Detectar cambios reales en SL/TP, ignorando diferencias mínimas por redondeo.
 
 **Tolerancia**: 0.00001 (1 punto para pares de 5 decimales)
+
+---
+
+#### `TryWriteCloseEvent(int ticket)` (v1.7)
+**Propósito**: Intentar escribir un evento CLOSE para un ticket específico.
+
+**Parámetros**:
+- `ticket`: Ticket de la orden cerrada
+
+**Retorno**: `true` si se escribió exitosamente, `false` si falló (ticket no disponible en historial)
+
+**Proceso**:
+1. Intenta seleccionar el ticket en el historial (`MODE_HISTORY`)
+2. Si tiene éxito → determina el tipo de orden y escribe el evento CLOSE
+3. Si falla → retorna `false` para indicar que debe reintentarse
+
+**Uso**: Función helper para el sistema de reintento de cierres pendientes.
+
+---
+
+#### `AddPendingClose(int ticket)` (v1.7)
+**Propósito**: Añadir un ticket al array de pendientes para reintentar escribir su evento CLOSE.
+
+**Parámetros**:
+- `ticket`: Ticket que falló al escribir CLOSE
+
+**Proceso**:
+1. Verifica si el ticket ya está en el array (evita duplicados)
+2. Si hay espacio (`g_pendingCloseCount < MAX_ORDERS`), añade el ticket
+3. Incrementa `g_pendingCloseCount`
+
+**Uso**: Cuando `TryWriteCloseEvent()` falla, se añade el ticket a pendientes para reintentar en el siguiente ciclo.
+
+---
+
+#### `RemovePendingClose(int ticket)` (v1.7)
+**Propósito**: Eliminar un ticket del array de pendientes después de escribir exitosamente su evento CLOSE.
+
+**Parámetros**:
+- `ticket`: Ticket que se escribió exitosamente
+
+**Proceso**:
+1. Busca el ticket en `g_pendingCloseTickets[]`
+2. Si lo encuentra, lo elimina reorganizando el array
+3. Decrementa `g_pendingCloseCount`
+
+**Uso**: Cuando `TryWriteCloseEvent()` tiene éxito, se elimina el ticket de pendientes para evitar reintentos innecesarios.
 
 ---
 
@@ -600,7 +651,26 @@ for(int mod = 0; mod < curCount; mod++)
 
 ---
 
-##### **Fase 3: Detectar CIERRES**
+##### **Fase 3: Procesar CIERRES (con sistema de reintento v1.7)**
+
+**3.1) Primero: Procesar tickets pendientes de ciclos anteriores**
+```mql4
+// Intentar procesar tickets pendientes
+for(int i = 0; i < g_pendingCloseCount; i++)
+{
+   int pendingTicket = g_pendingCloseTickets[i];
+   if(TryWriteCloseEvent(pendingTicket))
+   {
+      // Éxito: eliminar de pendientes
+      RemovePendingClose(pendingTicket);
+   }
+   // Si falla, se mantiene en pendientes para el siguiente ciclo
+}
+```
+
+**Propósito**: Reintentar escribir eventos CLOSE que fallaron en ciclos anteriores (por ejemplo, cuando el ticket aún no estaba disponible en el historial).
+
+**3.2) Segundo: Detectar nuevos CIERRES**
 ```mql4
 for(int p = 0; p < g_prevCount; p++)
 {
@@ -608,10 +678,10 @@ for(int p = 0; p < g_prevCount; p++)
    if(!TicketInArray(oldTicket, curTickets, curCount))
    {
       // Ticket que estaba antes pero ya no está
-      // Buscar en historial para obtener datos de cierre
-      if(OrderSelect(oldTicket, SELECT_BY_TICKET, MODE_HISTORY))
+      if(!TryWriteCloseEvent(oldTicket))
       {
-         // Escribe evento CLOSE
+         // Falló: añadir a pendientes para reintentar
+         AddPendingClose(oldTicket);
       }
    }
 }
@@ -619,8 +689,9 @@ for(int p = 0; p < g_prevCount; p++)
 
 **Lógica**:
 - Si un ticket está en `g_prevTickets[]` pero NO está en `curTickets[]` → se cerró
-- Busca la orden en el historial (`MODE_HISTORY`) para obtener datos completos
-- Escribe evento `CLOSE` al CSV
+- Intenta escribir el evento CLOSE usando `TryWriteCloseEvent()`
+- Si tiene éxito → evento escrito al CSV
+- Si falla (ticket aún no disponible en historial) → se añade a `g_pendingCloseTickets[]` para reintentar en el siguiente ciclo
 
 **Datos escritos**:
 - `eventType`: "CLOSE"
@@ -631,26 +702,53 @@ for(int p = 0; p < g_prevCount; p++)
 - `sl`: Stop Loss al momento del cierre
 - `tp`: Take Profit al momento del cierre
 
-**Nota**: Los campos `close_price`, `close_time` y `profit` ya no se escriben en la versión 1.6 (formato simplificado).
+**Sistema de reintento**:
+- Los tickets que fallan al escribir se mantienen en `g_pendingCloseTickets[]`
+- Se reintentan automáticamente en cada ciclo hasta que tengan éxito
+- Se mantienen en `g_prevTickets[]` para permitir la detección continua
+- Se eliminan de pendientes solo cuando se escriben exitosamente
+
+**Nota**: Los campos `close_price`, `close_time` y `profit` ya no se escriben en la versión 1.6+ (formato simplificado).
 
 ---
 
-##### **Fase 4: Actualizar lista previa**
+##### **Fase 4: Actualizar lista previa (manteniendo pendientes v1.7)**
 ```mql4
-g_prevCount = curCount;
+// Construir nueva lista combinando tickets abiertos actuales + pendientes
+int newPrevCount = 0;
+
+// Primero: añadir tickets abiertos actuales
 for(int m = 0; m < curCount; m++)
 {
-   g_prevTickets[m] = curTickets[m];
+   g_prevTickets[newPrevCount] = curTickets[m];
    // Actualizar SL/TP en g_prevOrders[]
+   newPrevCount++;
 }
+
+// Segundo: añadir tickets pendientes que no estén ya en la lista
+for(int pend = 0; pend < g_pendingCloseCount; pend++)
+{
+   int pendTicket = g_pendingCloseTickets[pend];
+   if(!TicketInArray(pendTicket, g_prevTickets, newPrevCount))
+   {
+      g_prevTickets[newPrevCount] = pendTicket;
+      // Mantener estado previo o intentar obtener del historial
+      newPrevCount++;
+   }
+}
+
+g_prevCount = newPrevCount;
 ```
 
-**Propósito**: Preparar el estado para el próximo ciclo del timer.
+**Propósito**: Preparar el estado para el próximo ciclo del timer, manteniendo los tickets pendientes para permitir reintentos continuos.
 
 **Proceso**:
-1. Actualiza `g_prevCount` con el número actual de órdenes
-2. Copia todos los tickets actuales a `g_prevTickets[]`
+1. Añade todos los tickets abiertos actuales a `g_prevTickets[]`
+2. Añade los tickets pendientes de cierre (para permitir reintentos en el siguiente ciclo)
 3. Actualiza `g_prevOrders[]` con los SL/TP actuales de cada orden
+4. Actualiza `g_prevCount` con el total (abiertos + pendientes)
+
+**Ventaja**: Los tickets pendientes se mantienen en el estado previo, permitiendo que el sistema los detecte nuevamente en el siguiente ciclo y reintente escribir el evento CLOSE hasta que tenga éxito.
 
 ---
 
@@ -789,7 +887,7 @@ FILE_BIN | FILE_READ | FILE_WRITE | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_W
 ### Detección de Cierres
 - **Método**: Comparación de listas (tickets que estaban y ya no están)
 - **Dependencia**: Requiere acceso al historial (`MODE_HISTORY`)
-- **Limitación**: Si el historial no está disponible, no se pueden obtener datos del cierre
+- **Sistema de reintento (v1.7)**: Si un ticket cerrado no está disponible inmediatamente en el historial (por ejemplo, cuando múltiples operaciones se cierran simultáneamente), el sistema mantiene el ticket en una cola de pendientes (`g_pendingCloseTickets[]`) y reintenta escribirlo automáticamente en los siguientes ciclos hasta que tenga éxito. Esto garantiza que ningún evento CLOSE se pierda, incluso en condiciones de alta carga o cuando MT4 tiene delays en actualizar el historial.
 
 ---
 
@@ -962,6 +1060,14 @@ if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
 ### v1.6
 - Simplifica campos a: `event_type;ticket;order_type;lots;symbol;sl;tp`
 - Elimina campos: open_price, open_time, close_price, close_time, profit
+
+### v1.7
+- Implementa sistema de reintento para cierres pendientes
+- Añade arrays `g_pendingCloseTickets[]` y `g_pendingCloseCount` para gestionar tickets pendientes
+- Añade funciones helper: `TryWriteCloseEvent()`, `AddPendingClose()`, `RemovePendingClose()`
+- Modifica `OnTimer()` para procesar primero tickets pendientes antes de detectar nuevos cierres
+- Modifica actualización de estado previo para mantener tickets pendientes en `g_prevTickets[]`
+- **Ventaja**: Garantiza que ningún evento CLOSE se pierda, incluso cuando múltiples operaciones se cierran simultáneamente o cuando hay delays en la actualización del historial de MT4
 
 ---
 

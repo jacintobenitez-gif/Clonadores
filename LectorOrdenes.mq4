@@ -10,6 +10,7 @@
 //|   v1.4: escribe en UTF-8 usando FILE_BIN                          |
 //|   v1.5: cambia OnTick() por OnTimer() para mayor eficiencia       |
 //|   v1.6: simplifica campos a: event_type;ticket;order_type;lots;symbol;sl;tp |
+//|   v1.7: añade sistema de reintento para cierres pendientes                  |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -33,6 +34,10 @@ int  g_prevTickets[MAX_ORDERS];  // Tickets abiertos en el tick anterior
 OrderState g_prevOrders[MAX_ORDERS]; // Estado previo completo (SL/TP)
 int  g_prevCount      = 0;       // Cuántos había
 bool g_initialized    = false;   // Para no disparar eventos en el primer tick
+
+// Sistema de reintento para cierres pendientes
+int  g_pendingCloseTickets[MAX_ORDERS];  // Tickets pendientes de escribir CLOSE
+int  g_pendingCloseCount = 0;            // Cuántos tickets pendientes hay
 
 //+------------------------------------------------------------------+
 //| Devuelve true si el ticket está en el array (size elementos)     |
@@ -155,7 +160,7 @@ void AppendEventToCSV(string eventType,
    // Convertir línea a UTF-8 y escribir
    uchar utf8Bytes[];
    StringToUTF8Bytes(line, utf8Bytes);
-   
+
    // Escribir bytes UTF-8
    FileWriteArray(handle, utf8Bytes);
    
@@ -164,6 +169,82 @@ void AppendEventToCSV(string eventType,
    FileWriteArray(handle, newline);
 
    FileClose(handle);
+}
+
+//+------------------------------------------------------------------+
+//| Intenta escribir un evento CLOSE para un ticket                  |
+//| Retorna true si se escribió exitosamente, false si falló         |
+//| v1.7: función helper para sistema de reintento                    |
+//+------------------------------------------------------------------+
+bool TryWriteCloseEvent(int ticket)
+{
+   if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY))
+   {
+      string tipo;
+      switch(OrderType())
+      {
+         case OP_BUY:       tipo = "BUY";       break;
+         case OP_SELL:      tipo = "SELL";      break;
+         case OP_BUYLIMIT:  tipo = "BUYLIMIT";  break;
+         case OP_SELLLIMIT: tipo = "SELLLIMIT"; break;
+         case OP_BUYSTOP:   tipo = "BUYSTOP";   break;
+         case OP_SELLSTOP:  tipo = "SELLSTOP"; break;
+         default:           tipo = "OTRO";      break;
+      }
+
+      AppendEventToCSV("CLOSE",
+                       ticket,
+                       tipo,
+                       OrderLots(),
+                       OrderSymbol(),
+                       OrderStopLoss(),
+                       OrderTakeProfit());
+      return(true);  // Éxito
+   }
+   return(false);  // Falló: ticket no encontrado en historial
+}
+
+//+------------------------------------------------------------------+
+//| Añade un ticket al array de pendientes (si no está ya)          |
+//| v1.7: sistema de reintento                                       |
+//+------------------------------------------------------------------+
+void AddPendingClose(int ticket)
+{
+   // Verificar si ya está en el array
+   for(int i = 0; i < g_pendingCloseCount; i++)
+   {
+      if(g_pendingCloseTickets[i] == ticket)
+         return;  // Ya está pendiente
+   }
+   
+   // Añadir si hay espacio
+   if(g_pendingCloseCount < MAX_ORDERS)
+   {
+      g_pendingCloseTickets[g_pendingCloseCount] = ticket;
+      g_pendingCloseCount++;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Elimina un ticket del array de pendientes                        |
+//| v1.7: sistema de reintento                                       |
+//+------------------------------------------------------------------+
+void RemovePendingClose(int ticket)
+{
+   for(int i = 0; i < g_pendingCloseCount; i++)
+   {
+      if(g_pendingCloseTickets[i] == ticket)
+      {
+         // Mover los siguientes hacia atrás
+         for(int j = i; j < g_pendingCloseCount - 1; j++)
+         {
+            g_pendingCloseTickets[j] = g_pendingCloseTickets[j + 1];
+         }
+         g_pendingCloseTickets[g_pendingCloseCount - 1] = 0;
+         g_pendingCloseCount--;
+         return;
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -211,7 +292,7 @@ void InitCSVIfNeeded()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("Observador_Common v1.6 inicializado. TXT(COMMON) = ", InpCSVFileName);
+   Print("Observador_Common v1.7 inicializado. TXT(COMMON) = ", InpCSVFileName);
    Print("Timer: ", InpTimerSeconds, " segundos");
 
    g_prevCount   = 0;
@@ -225,6 +306,10 @@ int OnInit()
       g_prevOrders[i].sl = 0.0;
       g_prevOrders[i].tp = 0.0;
    }
+   
+   // Inicializar sistema de reintento
+   g_pendingCloseCount = 0;
+   ArrayInitialize(g_pendingCloseTickets, 0);
 
    InitCSVIfNeeded();
    
@@ -401,57 +486,126 @@ void OnTimer()
       }
    }
 
-   //================= 3) Detectar CIERRES (tickets que ya no están) =====
+   //================= 3) Procesar CIERRES (con sistema de reintento) =====
+   
+   // 3.1) Primero: Intentar procesar tickets pendientes de ciclos anteriores
+   int i = 0;
+   while(i < g_pendingCloseCount)
+   {
+      int pendingTicket = g_pendingCloseTickets[i];
+      
+      // Intentar escribir el CLOSE
+      if(TryWriteCloseEvent(pendingTicket))
+      {
+         // Éxito: eliminar de pendientes
+         RemovePendingClose(pendingTicket);
+         // No incrementar i porque RemovePendingClose ya reorganizó el array
+      }
+      else
+      {
+         // Aún falla: mantener en pendientes y continuar
+         i++;
+      }
+   }
+   
+   // 3.2) Segundo: Detectar nuevos CIERRES (tickets que ya no están abiertos)
    for(int p = 0; p < g_prevCount; p++)
    {
       int oldTicket = g_prevTickets[p];
 
+      // Si el ticket ya no está en las posiciones abiertas actuales
       if(!TicketInArray(oldTicket, curTickets, curCount))
       {
-         if(OrderSelect(oldTicket, SELECT_BY_TICKET, MODE_HISTORY))
+         // Verificar si ya está en pendientes (para evitar duplicados)
+         bool alreadyPending = TicketInArray(oldTicket, g_pendingCloseTickets, g_pendingCloseCount);
+         
+         if(!alreadyPending)
          {
-            string tipo;
-            switch(OrderType())
+            // Intentar escribir el CLOSE
+            if(!TryWriteCloseEvent(oldTicket))
             {
-               case OP_BUY:       tipo = "BUY";       break;
-               case OP_SELL:      tipo = "SELL";      break;
-               case OP_BUYLIMIT:  tipo = "BUYLIMIT";  break;
-               case OP_SELLLIMIT: tipo = "SELLLIMIT"; break;
-               case OP_BUYSTOP:   tipo = "BUYSTOP";   break;
-               case OP_SELLSTOP:  tipo = "SELLSTOP"; break;
-               default:           tipo = "OTRO";      break;
+               // Falló: añadir a pendientes para reintentar en el siguiente ciclo
+               AddPendingClose(oldTicket);
             }
-
-            AppendEventToCSV("CLOSE",
-                             oldTicket,
-                             tipo,
-                             OrderLots(),
-                             OrderSymbol(),
-                             OrderStopLoss(),
-                             OrderTakeProfit());
          }
+         // Si ya está pendiente, no hacer nada (se procesará en 3.1 del siguiente ciclo)
       }
    }
 
-   //================= 4) Actualizar lista previa ========================
-   g_prevCount = curCount;
-   for(int m = 0; m < curCount; m++)
+   //================= 4) Actualizar lista previa (manteniendo pendientes) =====
+   // Guardar valor anterior de g_prevCount antes de modificarlo
+   int oldPrevCount = g_prevCount;
+   
+   // Construir nueva lista combinando tickets abiertos actuales + pendientes
+   int newPrevCount = 0;
+   
+   // Primero: añadir tickets abiertos actuales
+   for(int m = 0; m < curCount && newPrevCount < MAX_ORDERS; m++)
    {
-      g_prevTickets[m] = curTickets[m];
+      g_prevTickets[newPrevCount] = curTickets[m];
       
       // Actualizar estado previo (SL/TP) para la próxima comparación
       if(OrderSelect(curTickets[m], SELECT_BY_TICKET, MODE_TRADES))
       {
-         g_prevOrders[m].ticket = curTickets[m];
-         g_prevOrders[m].sl = OrderStopLoss();
-         g_prevOrders[m].tp = OrderTakeProfit();
+         g_prevOrders[newPrevCount].ticket = curTickets[m];
+         g_prevOrders[newPrevCount].sl = OrderStopLoss();
+         g_prevOrders[newPrevCount].tp = OrderTakeProfit();
       }
       else
       {
-         g_prevOrders[m].ticket = 0;
-         g_prevOrders[m].sl = 0.0;
-         g_prevOrders[m].tp = 0.0;
+         g_prevOrders[newPrevCount].ticket = 0;
+         g_prevOrders[newPrevCount].sl = 0.0;
+         g_prevOrders[newPrevCount].tp = 0.0;
+      }
+      newPrevCount++;
+   }
+   
+   // Segundo: añadir tickets pendientes que no estén ya en la lista
+   for(int pend = 0; pend < g_pendingCloseCount && newPrevCount < MAX_ORDERS; pend++)
+   {
+      int pendTicket = g_pendingCloseTickets[pend];
+      
+      // Solo añadir si no está ya en la lista (no debería estar, pero por seguridad)
+      if(!TicketInArray(pendTicket, g_prevTickets, newPrevCount))
+      {
+         g_prevTickets[newPrevCount] = pendTicket;
+         
+         // Intentar obtener estado del historial (si está disponible)
+         if(OrderSelect(pendTicket, SELECT_BY_TICKET, MODE_HISTORY))
+         {
+            g_prevOrders[newPrevCount].ticket = pendTicket;
+            g_prevOrders[newPrevCount].sl = OrderStopLoss();
+            g_prevOrders[newPrevCount].tp = OrderTakeProfit();
+         }
+         else
+         {
+            // Si no está en historial aún, mantener estado anterior si existe
+            // Usar oldPrevCount para buscar en el array anterior
+            int prevIdx = FindOrderStateIndex(pendTicket, g_prevOrders, oldPrevCount);
+            if(prevIdx >= 0)
+            {
+               g_prevOrders[newPrevCount] = g_prevOrders[prevIdx];
+            }
+            else
+            {
+               g_prevOrders[newPrevCount].ticket = pendTicket;
+               g_prevOrders[newPrevCount].sl = 0.0;
+               g_prevOrders[newPrevCount].tp = 0.0;
+            }
+         }
+         newPrevCount++;
       }
    }
+   
+   // Limpiar el resto del array
+   for(int clean = newPrevCount; clean < MAX_ORDERS; clean++)
+   {
+      g_prevTickets[clean] = 0;
+      g_prevOrders[clean].ticket = 0;
+      g_prevOrders[clean].sl = 0.0;
+      g_prevOrders[clean].tp = 0.0;
+   }
+   
+   g_prevCount = newPrevCount;
 }
 

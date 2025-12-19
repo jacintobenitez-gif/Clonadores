@@ -585,11 +585,12 @@ def main_loop():
             print("  1. Multiplicar por 1 (lotaje original)")
             print("  2. Multiplicar por 2 (doble del lotaje)")
             print("  3. Multiplicar por 3 (triple del lotaje)")
+            print("  4. Multiplicar por 4 (cuádruple del lotaje)")
             print("-" * 60)
             
             while True:
                 try:
-                    opcion = input("Ingrese su opción (1, 2 o 3): ").strip()
+                    opcion = input("Ingrese su opción (1, 2, 3 o 4): ").strip()
                     if opcion == "1":
                         LOT_MULTIPLIER = 1.0
                         print(f"✓ Multiplicador configurado: {LOT_MULTIPLIER}x (lotaje original)")
@@ -602,8 +603,12 @@ def main_loop():
                         LOT_MULTIPLIER = 3.0
                         print(f"✓ Multiplicador configurado: {LOT_MULTIPLIER}x (triple del lotaje)")
                         break
+                    elif opcion == "4":
+                        LOT_MULTIPLIER = 4.0
+                        print(f"✓ Multiplicador configurado: {LOT_MULTIPLIER}x (cuádruple del lotaje)")
+                        break
                     else:
-                        print("❌ Opción inválida. Por favor ingrese 1, 2 o 3.")
+                        print("❌ Opción inválida. Por favor ingrese 1, 2, 3 o 4.")
                 except (EOFError, KeyboardInterrupt):
                     print("\nOperación cancelada.")
                     raise SystemExit("Configuración cancelada por el usuario")
