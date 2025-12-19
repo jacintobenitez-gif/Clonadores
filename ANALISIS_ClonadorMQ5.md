@@ -53,19 +53,24 @@
 
 **Flujo de Negocio**:
 1. Llega un evento `OPEN` con los datos de la operación maestra
-2. **Se ejecuta directamente** sin verificaciones previas (el ticket del origen es único)
-3. Calcula el lotaje esclavo:
+2. **Verifica y reconecta automáticamente** con MT5 si es necesario (`ensure_mt5_connection()`)
+3. **Se ejecuta directamente** sin verificaciones previas (el ticket del origen es único)
+4. Calcula el lotaje esclavo:
    - Si `CUENTA_FONDEO = True`: `lotaje_esclavo = lotaje_maestro × multiplicador` (1x, 2x o 3x)
    - Si `CUENTA_FONDEO = False`: Usa `FIXED_LOTS` ajustado a los límites del símbolo
-4. Ejecuta la orden de mercado en MT5 (BUY o SELL)
-5. **Resultado**:
-   - **Éxito**: Elimina del CSV, registra "EXITOSO" en histórico
-   - **Fallo**: Elimina del CSV, registra "ERROR: [mensaje del broker]" en histórico
+5. Ejecuta la orden de mercado en MT5 (BUY o SELL)
+6. **Resultado**:
+   - **Éxito**: Elimina del CSV, registra "EXITOSO" en histórico, **envía notificación push de éxito**
+   - **Fallo**: Elimina del CSV, registra "ERROR: [mensaje del broker]" en histórico, **envía notificación push de fallo**
 
 **Características**:
 - No hay reintentos (si falla, se registra el error y se elimina)
 - El ticket maestro se guarda como comentario en MT5 para identificación
 - Respeta los límites de volumen del símbolo (min, max, step)
+- **Reconexión automática**: Verifica y reconecta con MT5 antes de ejecutar si se perdió la conexión
+- **Notificaciones push**: 
+  - Envía notificación push cuando se ejecuta exitosamente: "Ticket: XXXXX - OPEN EXITOSO: SYMBOL ORDER_TYPE LOTS lots"
+  - Envía notificación push cuando falla (cada fallo se notifica): "Ticket: XXXXX - OPEN FALLO: (retcode, 'comment')"
 
 ---
 
@@ -75,19 +80,22 @@
 
 **Flujo de Negocio**:
 1. Llega un evento `CLOSE` con el ticket maestro
-2. **Busca solo en posiciones abiertas** (no en historial)
-3. Si encuentra la posición abierta:
+2. **Verifica y reconecta automáticamente** con MT5 si es necesario (`ensure_mt5_connection()`)
+3. **Busca solo en posiciones abiertas** (no en historial)
+4. Si encuentra la posición abierta:
    - Ejecuta orden contraria (BUY → SELL, SELL → BUY)
    - Cierra al precio de mercado actual
-4. **Resultado**:
-   - **Éxito**: Elimina del CSV, registra "CLOSE OK" en histórico
-   - **No existe operación abierta**: Elimina del CSV, registra "No existe operacion abierta" en histórico
-   - **Fallo (cualquier error)**: Mantiene en CSV para reintento, registra "ERROR: Fallo al cerrar (reintento)" en histórico
+5. **Resultado**:
+   - **Éxito**: Elimina del CSV, registra "CLOSE OK" en histórico, remueve del set de notificaciones
+   - **No existe operación abierta**: Elimina del CSV, registra "No existe operacion abierta" en histórico, remueve del set de notificaciones
+   - **Fallo (cualquier error)**: Mantiene en CSV para reintento, registra "ERROR: Fallo al cerrar (reintento)" en histórico, **envía notificación push solo en el primer fallo**
 
 **Características**:
 - **Reintentos automáticos**: Si falla (incluyendo errores de red), se mantiene en CSV y se reintenta en el siguiente ciclo hasta que se cierre exitosamente
 - Solo busca en posiciones abiertas (no puede cerrar algo que ya está cerrado)
 - Manejo especial de errores de red (10031) para garantizar el cierre
+- **Reconexión automática**: Verifica y reconecta con MT5 antes de ejecutar si se perdió la conexión
+- **Notificaciones push**: Envía notificación push usando `SendNotification()` de MetaTrader solo en el primer fallo por ticket (evita duplicados en reintentos)
 
 ---
 
@@ -97,18 +105,21 @@
 
 **Flujo de Negocio**:
 1. Llega un evento `MODIFY` con el ticket maestro y nuevos valores de SL/TP
-2. **Busca solo en posiciones abiertas** (no en historial)
-3. Si encuentra la posición abierta:
+2. **Verifica y reconecta automáticamente** con MT5 si es necesario (`ensure_mt5_connection()`)
+3. **Busca solo en posiciones abiertas** (no en historial)
+4. Si encuentra la posición abierta:
    - Actualiza SL y TP con los nuevos valores
-4. **Resultado**:
-   - **Éxito**: Elimina del CSV, registra "MODIFY OK" en histórico
-   - **No existe operación abierta**: Elimina del CSV, registra "No existe operacion abierta" en histórico
-   - **Fallo (cualquier error)**: Mantiene en CSV para reintento, registra "ERROR: Fallo al modificar (reintento)" en histórico
+5. **Resultado**:
+   - **Éxito**: Elimina del CSV, registra "MODIFY OK" en histórico, remueve del set de notificaciones
+   - **No existe operación abierta**: Elimina del CSV, registra "No existe operacion abierta" en histórico, remueve del set de notificaciones
+   - **Fallo (cualquier error)**: Mantiene en CSV para reintento, registra "ERROR: Fallo al modificar (reintento)" en histórico, **envía notificación push solo en el primer fallo**
 
 **Características**:
 - **Reintentos automáticos**: Si falla (incluyendo errores de red), se mantiene en CSV y se reintenta en el siguiente ciclo hasta que se actualice exitosamente o se cierre la operación
 - Solo modifica posiciones abiertas (no puede modificar algo que ya está cerrado)
 - `TRADE_RETCODE_NO_CHANGES` se considera éxito (mismo SL/TP)
+- **Reconexión automática**: Verifica y reconecta con MT5 antes de ejecutar si se perdió la conexión
+- **Notificaciones push**: Envía notificación push usando `SendNotification()` de MetaTrader solo en el primer fallo por ticket (evita duplicados en reintentos)
 
 ---
 
@@ -324,17 +335,53 @@ class Ev:
 
 ---
 
+#### `ensure_mt5_connection()`
+**Propósito**: Verificar la conexión con MT5 y reconectar automáticamente si es necesario.
+
+**Proceso**:
+1. Verifica la conexión llamando a `mt5.terminal_info()`
+2. Si retorna `None` (conexión perdida):
+   - Imprime mensaje de reconexión
+   - Cierra la conexión actual con `mt5.shutdown()`
+   - Espera 1 segundo para dar tiempo al sistema
+   - Intenta reconectar con `mt5.initialize()`
+   - Si falla la reconexión, lanza `RuntimeError` con el error descriptivo
+   - Si tiene éxito, imprime confirmación de reconexión
+
+**Retorno**: `True` si la conexión está activa o se reconectó exitosamente
+
+**Uso**: Antes de cualquier operación crítica con MT5 (lectura de archivos, ejecución de órdenes, búsqueda de posiciones).
+
+**Manejo de errores**:
+- Formatea correctamente los errores de MT5 que vienen como tupla `(code, description)`
+- Proporciona mensajes descriptivos para facilitar el diagnóstico
+
+---
+
 #### `ensure_symbol(symbol: str)`
-**Propósito**: Asegurar que un símbolo esté disponible en MT5.
+**Propósito**: Asegurar que un símbolo esté disponible en MT5, con verificación y reconexión automática.
 
 **Parámetros**:
 - `symbol`: Símbolo a seleccionar
 
 **Proceso**:
-1. Llama a `mt5.symbol_select(symbol, True)`
-2. Si falla, lanza `RuntimeError` con el error de MT5
+1. Verifica la conexión con MT5 (`ensure_mt5_connection()`)
+2. Intenta seleccionar el símbolo con `mt5.symbol_select(symbol, True)`
+3. Si falla:
+   - Obtiene el error de MT5 (`mt5.last_error()`)
+   - Si es error IPC (-10001): "IPC send failed"
+     - Imprime mensaje de reconexión específico
+     - Intenta reconectar automáticamente (`ensure_mt5_connection()`)
+     - Reintenta la selección del símbolo
+     - Si falla nuevamente, lanza `RuntimeError` con el error descriptivo
+   - Si es otro error, lanza `RuntimeError` con el error descriptivo
 
-**Uso**: Antes de ejecutar operaciones, asegurar que el símbolo esté disponible.
+**Uso**: Antes de ejecutar operaciones, asegurar que el símbolo esté disponible y que la conexión con MT5 esté activa.
+
+**Características**:
+- Manejo específico del error IPC (-10001) para reconexión automática
+- Formatea correctamente los errores de MT5 como tuplas `(code, description)`
+- Proporciona mensajes descriptivos para facilitar el diagnóstico
 
 ---
 
@@ -350,6 +397,40 @@ class Ev:
 
 ---
 
+#### `send_push_notification(message: str) -> bool`
+**Propósito**: Enviar una notificación push usando `SendNotification()` de MetaTrader mediante archivo intermedio.
+
+**Nota importante**: La API de Python de MetaTrader5 NO incluye `send_notification()`. La función `SendNotification()` solo existe en MQL5. Por lo tanto, esta función escribe el mensaje en un archivo que es leído por el EA `EnviarNotificacion.mq5`.
+
+**Parámetros**:
+- `message`: Mensaje a enviar (máximo 255 caracteres)
+
+**Proceso**:
+1. Trunca el mensaje a 255 caracteres si es muy largo (límite de MT5)
+2. Obtiene la ruta del archivo `NotificationQueue.txt` en `Common\Files\` usando `common_files_csv_path()`
+3. Escribe el mensaje en el archivo en modo binario (UTF-8)
+4. Fuerza sincronización del sistema de archivos si está disponible
+5. Muestra mensajes informativos en consola con la ruta del archivo
+
+**Retorno**: 
+- `True` si se escribió exitosamente en el archivo
+- `False` si falló (con mensaje de error en consola)
+
+**Uso**: Enviar notificaciones push cuando:
+- Se inicia el sistema
+- OPEN se ejecuta exitosamente o falla
+- CLOSE falla (solo primer fallo por ticket)
+- MODIFY falla (solo primer fallo por ticket)
+
+**Características**:
+- Trunca automáticamente mensajes largos
+- Escribe en modo binario para compatibilidad UTF-8
+- Maneja errores de manera segura sin interrumpir el flujo principal
+- Muestra mensajes informativos en consola con la ruta del archivo
+- Requiere que el EA `EnviarNotificacion.mq5` esté ejecutándose para procesar las notificaciones
+
+---
+
 ### 4. Funciones de Búsqueda en MT5
 
 #### `find_open_clone(symbol: str, comment: str, master_ticket: str = None) -> Optional[Position]`
@@ -361,13 +442,17 @@ class Ev:
 - `master_ticket`: Ticket maestro (alternativo)
 
 **Proceso**:
-1. Obtiene todas las posiciones abiertas del símbolo (`mt5.positions_get(symbol=symbol)`)
-2. Compara el comentario de cada posición con el ticket maestro
-3. Retorna la primera posición que coincida
+1. Verifica la conexión con MT5 (`ensure_mt5_connection()`) antes de buscar
+2. Obtiene todas las posiciones abiertas del símbolo (`mt5.positions_get(symbol=symbol)`)
+3. Compara el comentario de cada posición con el ticket maestro
+4. Retorna la primera posición que coincida
 
 **Retorno**: Objeto `Position` si existe, `None` si no existe
 
 **Uso**: Verificar si una posición ya está abierta antes de ejecutar OPEN o para encontrar la posición a cerrar/modificar.
+
+**Características**:
+- Verifica la conexión antes de buscar posiciones para evitar errores IPC
 
 ---
 
@@ -459,6 +544,7 @@ return float(master_lots) * LOT_MULTIPLIER
 **Proceso**:
 
 1. **Preparación**:
+   - Verifica la conexión con MT5 (`ensure_mt5_connection()`)
    - Asegura que el símbolo esté disponible (`ensure_symbol()`)
    - Calcula lotaje esclavo (`compute_slave_lots()`)
    - Obtiene tick actual (`mt5.symbol_info_tick()`)
@@ -486,6 +572,7 @@ return float(master_lots) * LOT_MULTIPLIER
    ```
 
 4. **Ejecución**:
+   - Verifica la conexión con MT5 antes de enviar (`ensure_mt5_connection()`)
    - Envía orden con `mt5.order_send(req)`
    - Verifica `retcode`:
      - `TRADE_RETCODE_DONE` o `TRADE_RETCODE_PLACED` → Éxito
@@ -503,6 +590,8 @@ return float(master_lots) * LOT_MULTIPLIER
 - **No hay verificaciones previas**: Se ejecuta directamente sin buscar duplicados (el ticket del origen es único)
 - **No hay reintentos**: Si falla, se registra el error y se elimina del CSV
 - **Mensaje de error**: Incluye `retcode` y `comment` del MT5 para diagnóstico
+- **Verificación de conexión**: Verifica y reconecta automáticamente antes de ejecutar la operación
+- **Notificaciones push**: Envía notificación push con `SendNotification()` de MetaTrader cuando falla (ver sección "Sistema de Notificaciones Push")
 
 ---
 
@@ -530,6 +619,7 @@ return float(master_lots) * LOT_MULTIPLIER
    - Si existe en historial pero no está abierta → retorna `(False, "NO_EXISTE")` (ya estaba cerrada)
 
 3. **Preparación**:
+   - Verifica la conexión con MT5 (`ensure_mt5_connection()`)
    - Asegura que el símbolo esté disponible
    - Obtiene tick actual
 
@@ -555,6 +645,7 @@ return float(master_lots) * LOT_MULTIPLIER
    ```
 
 6. **Ejecución**:
+   - Verifica la conexión con MT5 antes de enviar (`ensure_mt5_connection()`)
    - Envía orden con `mt5.order_send(req)`
    - Verifica `retcode`:
      - `TRADE_RETCODE_DONE` → Éxito
@@ -577,6 +668,10 @@ return float(master_lots) * LOT_MULTIPLIER
 - **Código**: `10031` = "Request rejected due to absence of network connection"
 - **Acción**: Mantener la línea en el CSV para reintento automático en el próximo ciclo
 - **Razón**: Errores de red son temporales y pueden resolverse en el siguiente intento
+
+**Verificación de conexión**: Verifica y reconecta automáticamente antes de ejecutar la operación
+
+**Notificaciones push**: Envía notificación push con `SendNotification()` de MetaTrader cuando falla (ver sección "Sistema de Notificaciones Push")
 
 ---
 
@@ -616,6 +711,7 @@ return float(master_lots) * LOT_MULTIPLIER
    ```
 
 4. **Ejecución**:
+   - Verifica la conexión con MT5 antes de enviar (`ensure_mt5_connection()`)
    - Envía orden con `mt5.order_send(req)`
    - Verifica `retcode`:
      - `TRADE_RETCODE_DONE` → Éxito
@@ -636,6 +732,10 @@ return float(master_lots) * LOT_MULTIPLIER
 - **Si otro error**: Se mantiene en CSV para reintento (comportamiento conservador)
 
 **Nota**: `TRADE_RETCODE_NO_CHANGES` se considera éxito porque puede ocurrir si se intenta modificar con los mismos valores de SL/TP.
+
+**Verificación de conexión**: Verifica y reconecta automáticamente antes de ejecutar la operación
+
+**Notificaciones push**: Envía notificación push con `SendNotification()` de MetaTrader cuando falla (ver sección "Sistema de Notificaciones Push")
 
 ---
 
@@ -773,8 +873,9 @@ CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800
 - `csv_name`: Nombre del archivo CSV
 
 **Proceso**:
-1. Obtiene información del terminal con `mt5.terminal_info()`
-2. Construye ruta: `<commondata_path>\Files\<csv_name>`
+1. Verifica la conexión con MT5 (`ensure_mt5_connection()`) antes de obtener la ruta
+2. Obtiene información del terminal con `mt5.terminal_info()`
+3. Construye ruta: `<commondata_path>\Files\<csv_name>`
 
 **Retorno**: Ruta completa del archivo
 
@@ -782,6 +883,9 @@ CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800
 ```
 C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\TradeEvents.txt
 ```
+
+**Características**:
+- Verifica la conexión antes de obtener la ruta para evitar errores IPC
 
 ---
 
@@ -812,9 +916,21 @@ C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\TradeEve
    - Solicita opción al usuario
    - Configura `LOT_MULTIPLIER` globalmente
 
-3. **Bucle principal**:
+3. **Notificación de inicio**:
+   ```python
+   # Enviar notificación push de inicio
+   send_push_notification("Activado ClonadorMQ5.py")
+   ```
+   - Envía una notificación push indicando que el clonador se ha activado
+   - Mensaje: `"Activado ClonadorMQ5.py"`
+   - Se envía después de configurar el multiplicador de lotaje y antes de iniciar el bucle principal
+
+4. **Bucle principal**:
    ```python
    while True:
+       # Verificar conexión antes de cada ciclo
+       ensure_mt5_connection()
+       
        # Leer CSV
        events, lines, header = read_events_from_csv(path)
        
@@ -903,6 +1019,8 @@ C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\TradeEve
 - **Sin verificaciones previas**: Se ejecuta directamente (el ticket del origen es único)
 - **No hay reintentos**: Si falla, se registra el error y se elimina del CSV
 - **Mensaje de error**: Incluye `retcode` y `comment` del MT5 para diagnóstico completo
+- **Verificación de conexión**: Verifica y reconecta automáticamente antes de ejecutar
+- **Notificaciones push**: Envía notificación push cuando falla (cada fallo se notifica)
 
 ---
 
@@ -923,6 +1041,10 @@ C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\TradeEve
 
 **Reintentos**: Para cualquier error. Se mantiene en CSV y se reintenta automáticamente hasta que se cierre exitosamente.
 
+**Verificación de conexión**: Verifica y reconecta automáticamente antes de ejecutar
+
+**Notificaciones push**: Envía notificación push solo en el primer fallo por ticket (evita duplicados en reintentos)
+
 ---
 
 ### 3. MODIFY
@@ -940,6 +1062,10 @@ C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\TradeEve
 - **Error (cualquier tipo, incluyendo 10031)**: Mantiene en CSV para reintento, escribe "ERROR: Fallo al modificar (reintento)" al histórico
 
 **Reintentos**: Para cualquier error. Se mantiene en CSV y se reintenta automáticamente hasta que se actualice exitosamente o se cierre la operación.
+
+**Verificación de conexión**: Verifica y reconecta automáticamente antes de ejecutar
+
+**Notificaciones push**: Envía notificación push solo en el primer fallo por ticket (evita duplicados en reintentos)
 
 ---
 
@@ -961,6 +1087,27 @@ C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\TradeEve
 - **Aplicable a**: CLOSE y MODIFY (no OPEN)
 - **Comportamiento**: Se mantiene en CSV para reintento automático hasta éxito
 - **Razón**: Errores de red son temporales y pueden resolverse automáticamente
+
+### Errores de Conexión IPC (-10001)
+- **Código**: `-10001` = "IPC send failed"
+- **Manejo**: Detectado automáticamente en `ensure_symbol()` y otras funciones críticas
+- **Comportamiento**: 
+  - Se detecta el error IPC
+  - Se intenta reconectar automáticamente con `ensure_mt5_connection()`
+  - Se reintenta la operación después de reconectar
+  - Si falla nuevamente, se lanza `RuntimeError` con el error descriptivo
+- **Aplicable a**: Todas las operaciones que requieren comunicación con MT5
+- **Razón**: Errores IPC indican pérdida de conexión con MT5, requieren reconexión
+
+### Reconexión Automática
+- **Función**: `ensure_mt5_connection()`
+- **Comportamiento**:
+  - Verifica conexión con `mt5.terminal_info()`
+  - Si retorna `None`, intenta reconectar automáticamente
+  - Cierra conexión actual, espera 1 segundo, y reinicializa MT5
+  - Proporciona mensajes informativos durante el proceso de reconexión
+- **Uso**: Antes de operaciones críticas (lectura de archivos, ejecución de órdenes, búsqueda de posiciones)
+- **Ventaja**: Mayor robustez ante desconexiones temporales sin intervención manual
 
 ---
 
@@ -1093,6 +1240,19 @@ Si `CUENTA_FONDEO = True`, al iniciar se solicita:
 - **Ventaja**: Trazabilidad completa de todas las ejecuciones
 - **Uso**: Auditoría y depuración
 
+### 5. Reconexión automática con MT5
+- **Ventaja**: Mayor robustez ante desconexiones temporales
+- **Comportamiento**: Verifica conexión antes de operaciones críticas y reconecta automáticamente si se pierde
+- **Manejo específico**: Detecta errores IPC (-10001) y reconecta automáticamente
+- **Uso**: Antes de leer archivos, ejecutar órdenes, buscar posiciones
+
+### 6. Sistema de notificaciones push
+- **Ventaja**: Alertas inmediatas de inicio del sistema y fallos en operaciones críticas
+- **Comportamiento**: Envía notificaciones push usando `SendNotification()` de MetaTrader
+- **Uso**: 
+  - Notificar inicio del sistema ("Activado ClonadorMQ5.py")
+  - Notificar fallos en OPEN, CLOSE y MODIFY (ver sección "Sistema de Notificaciones Push")
+
 ---
 
 ## Ejemplo de Ejecución
@@ -1121,6 +1281,303 @@ event_type;ticket;order_type;lots;symbol;sl;tp
 
 ---
 
+## Sistema de Notificaciones Push
+
+### Propósito
+Enviar notificaciones push al dispositivo móvil para:
+- **Inicio del sistema**: Notificar cuando el clonador se activa
+- **Éxitos en operaciones**: Notificar cuando OPEN se ejecuta exitosamente
+- **Fallos en operaciones**: Notificar cuando fallan operaciones críticas (OPEN, CLOSE, MODIFY), permitiendo al usuario estar informado inmediatamente de problemas en el sistema de clonación
+
+### Implementación Técnica
+
+**Problema**: La API de Python de MetaTrader5 NO incluye la función `send_notification()`. La función `SendNotification()` solo existe en MQL5.
+
+**Solución**: Sistema de pasarela mediante archivo intermedio:
+1. **Python** (`ClonadorMQ5.py`): Escribe mensajes en `NotificationQueue.txt` ubicado en `Common\Files\`
+2. **EA MQL5** (`EnviarNotificacion.mq5`): Lee el archivo cada segundo y llama a `SendNotification()` de MQL5
+3. **Limpieza**: El EA limpia el archivo después de enviar exitosamente
+
+**Componentes**:
+- **Función Python**: `send_push_notification(message: str) -> bool`
+  - Escribe el mensaje en `NotificationQueue.txt` (Common\Files)
+  - Trunca mensajes a 255 caracteres (límite de MT5)
+  - Maneja errores y muestra mensajes informativos en consola
+  - Retorna `True` si se escribió exitosamente en el archivo, `False` si falló
+- **EA MQL5**: `EnviarNotificacion.mq5`
+  - Se ejecuta como Expert Advisor en cualquier gráfico de MT5
+  - Verifica `NotificationQueue.txt` cada segundo (configurable)
+  - Lee el archivo en modo binario y convierte UTF-8 a string
+  - Llama a `SendNotification()` de MQL5 con el mensaje
+  - Limpia el archivo después de enviar exitosamente
+  - Maneja errores y muestra logs informativos
+- **Sets globales en Python**: 
+  - `notified_close_tickets: set[str]` - Tickets de CLOSE ya notificados
+  - `notified_modify_tickets: set[str]` - Tickets de MODIFY ya notificados
+
+**Rutas**:
+- Python escribe en: `<commondata_path>\Files\NotificationQueue.txt`
+- EA lee de: `<commondata_path>\Files\NotificationQueue.txt` (usando `FILE_COMMON` con solo el nombre del archivo)
+- Ejemplo: `C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\NotificationQueue.txt`
+
+**Requisitos**:
+- El EA `EnviarNotificacion.mq5` debe estar ejecutándose como Expert Advisor en MT5
+- Las notificaciones deben estar habilitadas en el terminal MT5 (Configuración → Notificaciones)
+
+### Comportamiento por Tipo de Evento
+
+#### Inicio del Sistema
+- **Cuándo se notifica**: Cada vez que se inicializa `ClonadorMQ5.py`
+- **Formato del mensaje**: `"Activado ClonadorMQ5.py"`
+- **Ubicación**: Se envía después de inicializar MT5 y configurar el multiplicador de lotaje, antes de iniciar el bucle principal
+- **Características**:
+  - Se envía una única vez al inicio del script
+  - Confirma que el sistema está activo y funcionando
+  - Permite al usuario verificar que el clonador está en ejecución
+
+#### OPEN
+- **Cuándo se notifica**: 
+  - **Éxito**: Cada vez que se ejecuta exitosamente una operación OPEN
+  - **Fallo**: Cada vez que falla una operación OPEN
+- **Formato del mensaje**:
+  - **Éxito**: `"Ticket: XXXXX - OPEN EXITOSO: SYMBOL ORDER_TYPE LOTS lots"`
+  - **Fallo**: `"Ticket: XXXXX - OPEN FALLO: (retcode, 'comment')"`
+- **Ejemplos**: 
+  - Éxito: `"Ticket: 40014799 - OPEN EXITOSO: XAUUSD BUY 0.04 lots"`
+  - Fallo: `"Ticket: 40014799 - OPEN FALLO: (10004, 'Invalid price')"`
+  - Fallo: `"Ticket: 40014799 - OPEN FALLO: (None, 'order_send retornó None')"`
+- **Características**:
+  - **Notificación de éxito**: Se envía cuando `retcode` es `TRADE_RETCODE_DONE` o `TRADE_RETCODE_PLACED`
+  - **Notificación de fallo**: Se envía cuando `order_send` retorna `None` o cuando `retcode` no es éxito
+  - No hay rastreo de tickets notificados (cada operación se notifica independientemente)
+  - Se notifica tanto éxito como fallo sin excepciones
+  - Maneja tanto errores de `order_send` (cuando retorna objeto con `retcode` diferente de éxito) como cuando `order_send` retorna `None`
+  - Las notificaciones se envían inmediatamente después de detectar el resultado, antes de retornar
+
+#### CLOSE
+- **Cuándo se notifica**: Solo el primer fallo por ticket (evita notificaciones duplicadas en reintentos)
+- **Formato del mensaje**: `"Ticket: XXXXX - CLOSE FALLO: (retcode, 'comment')"`
+- **Ejemplos**: 
+  - `"Ticket: 40014799 - CLOSE FALLO: (10031, 'Request rejected due to absence of network connection')"`
+  - `"Ticket: 40014799 - CLOSE FALLO: (None, 'order_send retornó None')"`
+- **Características**:
+  - Usa un set en memoria (`notified_close_tickets`) para rastrear tickets ya notificados
+  - Verifica si el ticket está en el set antes de enviar: `if ev.master_ticket not in notified_close_tickets:`
+  - Si no está en el set:
+    - Envía la notificación push
+    - Agrega el ticket al set: `notified_close_tickets.add(ev.master_ticket)`
+  - Si ya está en el set: No envía notificación (ya se notificó antes)
+  - Remueve el ticket del set cuando:
+    - Se cierra exitosamente (CLOSE OK): `notified_close_tickets.discard(ev.master_ticket)`
+    - Se elimina del CSV por cualquier motivo (ej: "No existe operacion abierta"): `notified_close_tickets.discard(ev.master_ticket)`
+  - Evita notificaciones duplicadas en múltiples reintentos del mismo ticket
+  - Maneja tanto errores de `order_send` como cuando retorna `None`
+
+#### MODIFY
+- **Cuándo se notifica**: Solo el primer fallo por ticket (evita notificaciones duplicadas en reintentos)
+- **Formato del mensaje**: `"Ticket: XXXXX - MODIFY FALLO: (retcode, 'comment')"`
+- **Ejemplos**: 
+  - `"Ticket: 40014799 - MODIFY FALLO: (10031, 'Request rejected due to absence of network connection')"`
+  - `"Ticket: 40014799 - MODIFY FALLO: (None, 'order_send retornó None')"`
+- **Características**:
+  - Usa un set en memoria (`notified_modify_tickets`) para rastrear tickets ya notificados
+  - Verifica si el ticket está en el set antes de enviar: `if ev.master_ticket not in notified_modify_tickets:`
+  - Si no está en el set:
+    - Envía la notificación push
+    - Agrega el ticket al set: `notified_modify_tickets.add(ev.master_ticket)`
+  - Si ya está en el set: No envía notificación (ya se notificó antes)
+  - Remueve el ticket del set cuando:
+    - Se modifica exitosamente (MODIFY OK): `notified_modify_tickets.discard(ev.master_ticket)`
+    - Se elimina del CSV por cualquier motivo (ej: "No existe operacion abierta"): `notified_modify_tickets.discard(ev.master_ticket)`
+  - Evita notificaciones duplicadas en múltiples reintentos del mismo ticket
+  - Maneja tanto errores de `order_send` como cuando retorna `None`
+
+### Gestión de Memoria
+- **Sets en memoria**: `notified_close_tickets` y `notified_modify_tickets` (declarados como variables globales)
+- **Limpieza automática**: Los tickets se remueven del set usando `discard()` cuando:
+  - Se procesan exitosamente (CLOSE OK, MODIFY OK)
+  - Se eliminan del CSV por cualquier motivo (NO_EXISTE)
+- **Método de limpieza**: `notified_close_tickets.discard(ev.master_ticket)` y `notified_modify_tickets.discard(ev.master_ticket)`
+- **Ventaja**: 
+  - Evita consumo excesivo de memoria
+  - Permite notificar nuevamente si el mismo ticket vuelve a fallar después de ser procesado
+  - `discard()` es seguro (no lanza excepción si el elemento no existe)
+
+### Flujo de Notificación
+
+```
+Operación ejecutada
+    │
+    ├─ OPEN → 
+    │   ├─ Éxito → Notificar siempre: "Ticket: XXXXX - OPEN EXITOSO: ..."
+    │   └─ Fallo → Notificar siempre: "Ticket: XXXXX - OPEN FALLO: ..."
+    │
+    ├─ CLOSE → 
+    │   ├─ Éxito → No notificar
+    │   └─ Fallo → Verificar si ticket está en notified_close_tickets
+    │       ├─ No está → Notificar y agregar al set
+    │       └─ Está → No notificar (ya se notificó antes)
+    │
+    └─ MODIFY → 
+        ├─ Éxito → No notificar
+        └─ Fallo → Verificar si ticket está en notified_modify_tickets
+            ├─ No está → Notificar y agregar al set
+            └─ Está → No notificar (ya se notificó antes)
+```
+
+### Ejemplos de Mensajes
+
+**OPEN exitoso**:
+```
+Ticket: 40014799 - OPEN EXITOSO: XAUUSD BUY 0.04 lots
+```
+
+**OPEN fallido**:
+```
+Ticket: 40014799 - OPEN FALLO: (10004, 'Invalid price')
+```
+
+**CLOSE fallido (primer intento)**:
+```
+Ticket: 40014799 - CLOSE FALLO: (10031, 'Request rejected due to absence of network connection')
+```
+
+**CLOSE fallido (reintento)**:
+```
+(No se envía notificación - ya fue notificado en el primer fallo)
+```
+
+**MODIFY fallido (primer intento)**:
+```
+Ticket: 40014799 - MODIFY FALLO: (10031, 'Request rejected due to absence of network connection')
+```
+
+**MODIFY fallido (reintento)**:
+```
+(No se envía notificación - ya fue notificado en el primer fallo)
+```
+
+### Detalles de Implementación
+
+#### Función `send_push_notification(message: str) -> bool`
+```python
+def send_push_notification(message: str) -> bool:
+    """
+    Envía una notificación push usando SendNotification() de MetaTrader mediante archivo intermedio.
+    
+    La API de Python de MetaTrader5 NO incluye send_notification(). La función SendNotification()
+    solo existe en MQL5. Por lo tanto:
+    - Python escribe el mensaje en NotificationQueue.txt (Common\Files)
+    - El EA MQL5 EnviarNotificacion.mq5 debe estar ejecutándose para leer el archivo
+    - El EA MQL5 llama a SendNotification() y limpia el archivo
+    
+    Parámetros:
+        message: Mensaje a enviar (máximo 255 caracteres)
+    
+    Retorno:
+        True si se escribió exitosamente en el archivo, False si falló
+    
+    Nota: El EA EnviarNotificacion.mq5 debe estar ejecutándose como Expert Advisor en MT5
+    para procesar las notificaciones.
+    """
+    try:
+        # Truncar mensaje si es muy largo (límite de MT5)
+        if len(message) > 255:
+            message = message[:252] + "..."
+        
+        # Obtener ruta del archivo de notificaciones en Common\Files
+        notification_path = common_files_csv_path(NOTIFICATION_FILE)
+        
+        # Escribir el mensaje en el archivo (el EA MQL5 lo leerá y enviará)
+        # Usar modo binario y asegurar que el archivo se cierre correctamente
+        with open(notification_path, "wb") as f:
+            f.write(message.encode('utf-8'))
+        
+        # Forzar sincronización del sistema de archivos
+        if hasattr(os, 'sync'):
+            os.sync()
+        
+        print(f"[NOTIFICACION] Mensaje escrito en archivo para envío: {message}")
+        print(f"[NOTIFICACION] Ruta del archivo: {notification_path}")
+        return True
+    except Exception as e:
+        print(f"[ERROR NOTIFICACION] Excepción al escribir notificación en archivo: {e}")
+        return False
+```
+
+**Características**:
+- Trunca automáticamente mensajes largos a 255 caracteres (límite de MT5)
+- Escribe el mensaje en `NotificationQueue.txt` ubicado en `Common\Files\`
+- Usa modo binario para escribir UTF-8 correctamente
+- Maneja errores de manera segura sin interrumpir el flujo principal
+- Muestra mensajes informativos en consola con la ruta del archivo
+
+#### EA MQL5 `EnviarNotificacion.mq5`
+
+**Propósito**: Leer `NotificationQueue.txt` y enviar notificaciones usando `SendNotification()` de MQL5.
+
+**Funcionamiento**:
+1. Se ejecuta como Expert Advisor en cualquier gráfico de MT5
+2. Configura un timer que verifica el archivo cada segundo (configurable)
+3. En `OnTimer()`:
+   - Intenta abrir `NotificationQueue.txt` usando `FILE_COMMON` (busca en `Common\Files\`)
+   - Si el archivo no existe (error 5004), continúa sin mostrar error (comportamiento normal)
+   - Si el archivo existe, lo lee en modo binario
+   - Convierte los bytes UTF-8 a string
+   - Verifica que las notificaciones estén habilitadas en el terminal
+   - Llama a `SendNotification(message)`
+   - Limpia el archivo escribiendo cadena vacía después de enviar exitosamente
+   - Muestra logs informativos en la pestaña "Expert"
+
+**Parámetros configurables**:
+- `InpNotificationFile`: Nombre del archivo (por defecto: "NotificationQueue.txt")
+- `InpTimerSeconds`: Intervalo de verificación en segundos (por defecto: 1)
+
+**Manejo de errores**:
+- Error 5004 (FILE_NOT_FOUND): No muestra error (archivo no existe todavía, comportamiento normal)
+- Otros errores: Muestra mensaje de error en logs
+- Si `SendNotification()` falla: Muestra error pero mantiene el mensaje en el archivo para reintento
+
+**Requisitos**:
+- Debe estar ejecutándose como Expert Advisor en MT5
+- Las notificaciones deben estar habilitadas en el terminal (Configuración → Notificaciones)
+
+#### Ubicación de las Notificaciones en el Código
+
+**OPEN** (`open_clone()`):
+- Se envía notificación de éxito cuando `retcode` es `TRADE_RETCODE_DONE` o `TRADE_RETCODE_PLACED`
+- Se envía notificación de fallo cuando `order_send` retorna `None`
+- Se envía notificación de fallo cuando `retcode` no es `TRADE_RETCODE_DONE` ni `TRADE_RETCODE_PLACED`
+- Las notificaciones se envían inmediatamente después de detectar el resultado, antes de retornar
+
+**CLOSE** (`close_clone()`):
+- Se verifica si el ticket está en `notified_close_tickets` antes de enviar
+- Se envía cuando `order_send` retorna `None` (si no está en el set)
+- Se envía cuando `retcode` no es `TRADE_RETCODE_DONE` (si no está en el set)
+- Se agrega al set después de enviar la notificación
+
+**MODIFY** (`modify_clone()`):
+- Se verifica si el ticket está en `notified_modify_tickets` antes de enviar
+- Se envía cuando `order_send` retorna `None` o cuando `retcode` no es éxito (si no está en el set)
+- Se agrega al set después de enviar la notificación
+
+**Limpieza de Sets** (`main_loop()`):
+- Se remueven tickets de `notified_close_tickets` cuando CLOSE es exitoso o se elimina del CSV
+- Se remueven tickets de `notified_modify_tickets` cuando MODIFY es exitoso o se elimina del CSV
+- Se usa `discard()` para evitar excepciones si el elemento no existe
+
+### Ventajas del Sistema
+1. **Alertas inmediatas**: El usuario recibe notificaciones push en tiempo real cuando algo ocurre (éxito o fallo)
+2. **Confirmación de operaciones**: Notifica cuando OPEN se ejecuta exitosamente, permitiendo verificar que las operaciones se están clonando correctamente
+3. **Sin spam**: Evita notificaciones duplicadas para CLOSE y MODIFY en múltiples reintentos
+4. **Información completa**: Incluye número de error y mensaje descriptivo de MetaTrader para diagnóstico
+5. **Gestión eficiente de memoria**: Limpia automáticamente los sets cuando los tickets se procesan exitosamente
+6. **Manejo robusto de errores**: Trunca mensajes largos y maneja excepciones sin interrumpir el flujo principal
+7. **Limpieza segura**: Usa `discard()` para evitar excepciones al remover elementos del set
+8. **Sistema de pasarela robusto**: Usa archivo intermedio que permite que Python y MQL5 se comuniquen de forma asíncrona y confiable
+
+---
+
 ## Versiones y Evolución
 
 ### V1
@@ -1132,12 +1589,23 @@ event_type;ticket;order_type;lots;symbol;sl;tp
 - Eliminadas lecturas al historial de MQL5 (solo verificación inicial)
 - Timer reducido a 1 segundo
 
-### V3 (Actual)
+### V3
 - Lectura exclusiva de UTF-8
 - Formato simplificado de campos (`event_type;ticket;order_type;lots;symbol;sl;tp`)
 - Manejo especial de error 10031 (red) para CLOSE y MODIFY
 - Multiplicador de lotaje configurable al inicio
 - Registro completo en histórico de todas las ejecuciones
+
+### V4 (Actual)
+- **Reconexión automática con MT5**: Sistema robusto de verificación y reconexión automática ante pérdida de conexión
+- **Manejo específico de errores IPC**: Detección y reconexión automática para errores -10001 (IPC send failed)
+- **Sistema de notificaciones push**: 
+  - Sistema de pasarela mediante archivo intermedio (`NotificationQueue.txt`)
+  - EA MQL5 `EnviarNotificacion.mq5` para leer archivo y enviar notificaciones usando `SendNotification()` de MQL5
+  - Notificaciones de inicio del sistema
+  - Notificaciones de éxito y fallo para OPEN
+  - Notificaciones de fallo para CLOSE y MODIFY (solo primer fallo por ticket)
+- **Gestión inteligente de notificaciones**: Evita notificaciones duplicadas para CLOSE y MODIFY en múltiples reintentos usando sets en memoria
 
 ---
 
@@ -1152,6 +1620,11 @@ event_type;ticket;order_type;lots;symbol;sl;tp
 5. **Busca solo en abiertas** para CLOSE y MODIFY (no en historial)
 6. **Registra** todas las ejecuciones en un archivo histórico con mensajes descriptivos
 7. **Optimiza** el rendimiento leyendo cada 1 segundo y ejecutando directamente
+8. **Reconecta automáticamente** con MT5 si se pierde la conexión (verificación antes de operaciones críticas)
+9. **Notifica** mediante sistema de pasarela usando archivo intermedio y EA MQL5:
+   - Notificación de inicio del sistema
+   - Notificación de éxito y fallo para OPEN
+   - Notificación de fallo para CLOSE y MODIFY (solo primer fallo por ticket, evita duplicados)
 
 El script funciona como un puente entre sistemas de trading (MT4 → MT5) permitiendo la clonación automática de operaciones con configuración flexible de lotajes y manejo robusto de errores.
 

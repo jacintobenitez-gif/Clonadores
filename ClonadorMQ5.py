@@ -19,6 +19,7 @@ import MetaTrader5 as mt5
 # ========= CONFIG (equivalentes a Inputs) =========
 CSV_NAME = "TradeEvents.txt"     # en Common\Files
 CSV_HISTORICO = "TradeEvents_historico.txt"  # Archivo TXT histórico de ejecuciones exitosas
+NOTIFICATION_FILE = "NotificationQueue.txt"  # Archivo de cola para notificaciones push (leído por EnviarNotificacion.mq5)
 TIMER_SECONDS = 1
 SLIPPAGE_POINTS = 30
 
@@ -28,6 +29,10 @@ MAGIC = 0
 # Multiplicador de lotaje (se establece al inicio si CUENTA_FONDEO = True)
 LOT_MULTIPLIER = 1.0              # Por defecto 1x, se configura al inicio
 # ================================================
+
+# Sets para rastrear tickets ya notificados (evitar duplicados en reintentos)
+notified_close_tickets: set[str] = set()   # Tickets de CLOSE ya notificados
+notified_modify_tickets: set[str] = set()   # Tickets de MODIFY ya notificados
 
 @dataclass
 class Ev:
@@ -73,16 +78,93 @@ def compute_slave_lots(symbol: str, master_lots: float) -> float:
     lot_digits = max(2, d)
     return round(lots, lot_digits)
 
+def ensure_mt5_connection():
+    """Verifica la conexión con MT5 y reconecta si es necesario"""
+    ti = mt5.terminal_info()
+    if ti is None:
+        # Intentar reconectar
+        print("[RECONEXIÓN] Perdida conexión con MT5, intentando reconectar...")
+        mt5.shutdown()
+        time.sleep(1)  # Esperar un segundo antes de reconectar
+        if not mt5.initialize():
+            init_error = mt5.last_error()
+            error_code = init_error[0] if isinstance(init_error, tuple) else init_error
+            error_desc = init_error[1] if isinstance(init_error, tuple) and len(init_error) > 1 else str(init_error)
+            raise RuntimeError(f"No se pudo reconectar con MT5: ({error_code}, '{error_desc}')")
+        print("[RECONEXIÓN] Reconexión exitosa con MT5")
+        return True
+    return True
+
 def ensure_symbol(symbol: str):
+    """Selecciona un símbolo en MT5, verificando conexión primero"""
+    ensure_mt5_connection()
     if not mt5.symbol_select(symbol, True):
-        raise RuntimeError(f"No puedo seleccionar {symbol}: {mt5.last_error()}")
+        error_info = mt5.last_error()
+        error_code = error_info[0] if isinstance(error_info, tuple) else error_info
+        error_desc = error_info[1] if isinstance(error_info, tuple) and len(error_info) > 1 else str(error_info)
+        # Si es error de IPC, intentar reconectar
+        if error_code == -10001:  # IPC send failed
+            print(f"[RECONEXIÓN] Error IPC al seleccionar {symbol}, intentando reconectar...")
+            ensure_mt5_connection()
+            # Reintentar después de reconectar
+            if not mt5.symbol_select(symbol, True):
+                retry_error = mt5.last_error()
+                retry_code = retry_error[0] if isinstance(retry_error, tuple) else retry_error
+                retry_desc = retry_error[1] if isinstance(retry_error, tuple) and len(retry_error) > 1 else str(retry_error)
+                raise RuntimeError(f"No puedo seleccionar {symbol}: ({retry_code}, '{retry_desc}')")
+        else:
+            raise RuntimeError(f"No puedo seleccionar {symbol}: ({error_code}, '{error_desc}')")
 
 def clone_comment(master_ticket: str) -> str:
     """Retorna solo el ticket maestro como comentario (evita truncamiento)"""
     return master_ticket
 
+def send_push_notification(message: str) -> bool:
+    """
+    Envía una notificación push usando SendNotification() de MetaTrader mediante archivo intermedio.
+    
+    La API de Python de MetaTrader5 NO incluye send_notification(). La función SendNotification()
+    solo existe en MQL5. Por lo tanto:
+    - Python escribe el mensaje en NotificationQueue.txt (Common\Files)
+    - El script MQL5 EnviarNotificacion.mq5 debe estar ejecutándose para leer el archivo
+    - El script MQL5 llama a SendNotification() y limpia el archivo
+    
+    Parámetros:
+        message: Mensaje a enviar (máximo 255 caracteres)
+    
+    Retorno:
+        True si se escribió exitosamente en el archivo, False si falló
+    
+    Nota: El script EnviarNotificacion.mq5 debe estar ejecutándose como EA o script en MT5
+    para procesar las notificaciones.
+    """
+    try:
+        # Truncar mensaje si es muy largo (límite de MT5)
+        if len(message) > 255:
+            message = message[:252] + "..."
+        
+        # Obtener ruta del archivo de notificaciones en Common\Files
+        notification_path = common_files_csv_path(NOTIFICATION_FILE)
+        
+        # Escribir el mensaje en el archivo (el script MQL5 lo leerá y enviará)
+        # Usar modo binario y asegurar que el archivo se cierre correctamente
+        with open(notification_path, "wb") as f:
+            f.write(message.encode('utf-8'))
+        
+        # Forzar sincronización del sistema de archivos
+        if hasattr(os, 'sync'):
+            os.sync()
+        
+        print(f"[NOTIFICACION] Mensaje escrito en archivo para envío: {message}")
+        print(f"[NOTIFICACION] Ruta del archivo: {notification_path}")
+        return True
+    except Exception as e:
+        print(f"[ERROR NOTIFICACION] Excepción al escribir notificación en archivo: {e}")
+        return False
+
 def find_open_clone(symbol: str, comment: str, master_ticket: str = None):
     """Busca una posición abierta por símbolo y comentario (ticket maestro)"""
+    ensure_mt5_connection()
     poss = mt5.positions_get(symbol=symbol)
     if not poss:
         return None
@@ -155,6 +237,7 @@ def open_clone(ev: Ev) -> tuple[bool, str]:
     """
     comment = clone_comment(ev.master_ticket)
     
+    ensure_mt5_connection()
     ensure_symbol(ev.symbol)
     lots = compute_slave_lots(ev.symbol, ev.master_lots)
     tick = mt5.symbol_info_tick(ev.symbol)
@@ -188,16 +271,31 @@ def open_clone(ev: Ev) -> tuple[bool, str]:
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_FOK,
     }
+    ensure_mt5_connection()  # Verificar conexión antes de enviar orden
     res = mt5.order_send(req)
     if res is None:
         error_msg = "order_send retornó None"
         print(f"[ERROR OPEN] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg}")
+        
+        # Enviar notificación push para OPEN (cada fallo se notifica)
+        notification_msg = f"Ticket: {ev.master_ticket} - OPEN FALLO: (None, 'order_send retornó None')"
+        send_push_notification(notification_msg)
+        
         return (False, f"ERROR: {error_msg}")
     
     if res.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
         error_msg = f"retcode={res.retcode} comment={getattr(res,'comment','')}"
         print(f"[ERROR OPEN] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg}")
+        
+        # Enviar notificación push para OPEN (cada fallo se notifica)
+        notification_msg = f"Ticket: {ev.master_ticket} - OPEN FALLO: ({res.retcode}, '{getattr(res,'comment','')}')"
+        send_push_notification(notification_msg)
+        
         return (False, f"ERROR: {error_msg}")
+    
+    # OPEN exitoso - enviar notificación de éxito
+    notification_msg = f"Ticket: {ev.master_ticket} - OPEN EXITOSO: {ev.symbol} {ev.order_type} {lots} lots"
+    send_push_notification(notification_msg)
     
     return (True, "EXITOSO")  # Éxito
 
@@ -217,6 +315,7 @@ def close_clone(ev: Ev) -> tuple[bool, str]:
         print(f"[SKIP CLOSE] {ev.symbol} (maestro: {ev.master_ticket}) - No existe operacion abierta")
         return (False, "NO_EXISTE")  # no está abierta, eliminar del CSV
 
+    ensure_mt5_connection()
     ensure_symbol(ev.symbol)
     tick = mt5.symbol_info_tick(ev.symbol)
     if tick is None:
@@ -243,10 +342,18 @@ def close_clone(ev: Ev) -> tuple[bool, str]:
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_FOK,
     }
+    ensure_mt5_connection()  # Verificar conexión antes de enviar orden
     res = mt5.order_send(req)
     if res is None:
         error_msg = "order_send retornó None"
         print(f"[ERROR CLOSE] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
+        
+        # Enviar notificación push solo en el primer fallo por ticket
+        if ev.master_ticket not in notified_close_tickets:
+            notification_msg = f"Ticket: {ev.master_ticket} - CLOSE FALLO: (None, 'order_send retornó None')"
+            send_push_notification(notification_msg)
+            notified_close_tickets.add(ev.master_ticket)
+        
         return (False, "FALLO")  # Fallo, mantener en CSV para reintento
     
     if res.retcode == mt5.TRADE_RETCODE_DONE:
@@ -254,6 +361,13 @@ def close_clone(ev: Ev) -> tuple[bool, str]:
     
     # Cualquier error (incluyendo 10031): mantener en CSV para reintento hasta que se cierre la operación
     error_msg = f"retcode={res.retcode} comment={getattr(res,'comment','')}"
+    
+    # Enviar notificación push solo en el primer fallo por ticket
+    if ev.master_ticket not in notified_close_tickets:
+        notification_msg = f"Ticket: {ev.master_ticket} - CLOSE FALLO: ({res.retcode}, '{getattr(res,'comment','')}')"
+        send_push_notification(notification_msg)
+        notified_close_tickets.add(ev.master_ticket)
+    
     if res.retcode == 10031:
         print(f"[CLOSE ERROR RED] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
     else:
@@ -284,6 +398,7 @@ def modify_clone(ev: Ev) -> tuple[bool, str]:
         "tp": ev.tp if ev.tp > 0 else 0.0,
         "comment": comment,
     }
+    ensure_mt5_connection()  # Verificar conexión antes de enviar orden
     res = mt5.order_send(req)
     
     # Verificar resultado
@@ -292,6 +407,15 @@ def modify_clone(ev: Ev) -> tuple[bool, str]:
     
     # Cualquier error (incluyendo 10031): mantener en CSV para reintento hasta que se cierre la operación
     error_msg = f"retcode={getattr(res,'retcode',None)} comment={getattr(res,'comment',None)}"
+    
+    # Enviar notificación push solo en el primer fallo por ticket
+    if ev.master_ticket not in notified_modify_tickets:
+        retcode_str = str(getattr(res,'retcode',None)) if res is not None else "None"
+        comment_str = str(getattr(res,'comment',None)) if res is not None else "order_send retornó None"
+        notification_msg = f"Ticket: {ev.master_ticket} - MODIFY FALLO: ({retcode_str}, '{comment_str}')"
+        send_push_notification(notification_msg)
+        notified_modify_tickets.add(ev.master_ticket)
+    
     if res is not None and res.retcode == 10031:
         print(f"[MODIFY ERROR RED] {ev.symbol} (maestro: {ev.master_ticket}): {error_msg} - Manteniendo en CSV para reintento")
     else:
@@ -397,10 +521,13 @@ def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
     return events, lines, header_line
 
 def common_files_csv_path(csv_name: str) -> str:
+    """Obtiene la ruta del archivo CSV en Common\Files, verificando conexión primero"""
+    ensure_mt5_connection()
     ti = mt5.terminal_info()
     if ti is None:
         raise RuntimeError("No hay terminal_info() (¿MT5 abierto?)")
-    # normalmente: <commondata_path>\\Files\\TradeEvents.csv
+    # FILE_COMMON en MQL5 busca en: <commondata_path>\Files\ (no MQL5\Files)
+    # Python debe escribir en la misma ubicación
     return os.path.join(ti.commondata_path, "Files", csv_name)
 
 def append_to_history_csv(csv_line: str, resultado: str = "EXITOSO"):
@@ -484,9 +611,15 @@ def main_loop():
         print(f"Verificación: Solo MT5 (historial + abiertas)")
         print(f"Presiona Ctrl+C para detener")
         print("-" * 60)
+        
+        # Enviar notificación push de inicio
+        send_push_notification("Activado ClonadorMQ5.py")
 
         while True:
             try:
+                # Verificar conexión antes de cada ciclo
+                ensure_mt5_connection()
+                
                 if os.path.exists(path) and os.path.getsize(path) > 0:
                     # Leer eventos y líneas originales
                     events: list[Ev] = []
@@ -525,9 +658,13 @@ def main_loop():
                                 if executed_successfully:
                                     print(f"[CLOSE] {ev.symbol} (maestro: {ev.master_ticket})")
                                     append_to_history_csv(original_line, "CLOSE OK")
+                                    # Remover del set de notificaciones (procesado exitosamente)
+                                    notified_close_tickets.discard(ev.master_ticket)
                                 elif motivo == "NO_EXISTE":
                                     # No existe operación abierta, eliminar del CSV
                                     append_to_history_csv(original_line, "No existe operacion abierta")
+                                    # Remover del set de notificaciones (eliminado del CSV)
+                                    notified_close_tickets.discard(ev.master_ticket)
                                 elif motivo == "FALLO":
                                     # Fallo al cerrar (cualquier error), mantener en CSV para reintento
                                     remaining_lines.append(original_line)
@@ -538,9 +675,13 @@ def main_loop():
                                 if executed_successfully:
                                     print(f"[MODIFY] {ev.symbol} SL={ev.sl} TP={ev.tp} (maestro: {ev.master_ticket})")
                                     append_to_history_csv(original_line, "MODIFY OK")
+                                    # Remover del set de notificaciones (procesado exitosamente)
+                                    notified_modify_tickets.discard(ev.master_ticket)
                                 elif motivo == "NO_EXISTE":
                                     # No existe operación abierta, eliminar del CSV
                                     append_to_history_csv(original_line, "No existe operacion abierta")
+                                    # Remover del set de notificaciones (eliminado del CSV)
+                                    notified_modify_tickets.discard(ev.master_ticket)
                                 elif motivo == "FALLO":
                                     # Fallo al modificar (cualquier error), mantener en CSV para reintento
                                     remaining_lines.append(original_line)
