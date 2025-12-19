@@ -671,7 +671,7 @@ return float(master_lots) * LOT_MULTIPLIER
 
 **Verificación de conexión**: Verifica y reconecta automáticamente antes de ejecutar la operación
 
-**Notificaciones push**: Envía notificación push con `SendNotification()` de MetaTrader cuando falla (ver sección "Sistema de Notificaciones Push")
+**Notificaciones push**: Envía notificación push con `SendNotification()` de MetaTrader cuando se ejecuta exitosamente o cuando falla (ver sección "Sistema de Notificaciones Push")
 
 ---
 
@@ -735,7 +735,7 @@ return float(master_lots) * LOT_MULTIPLIER
 
 **Verificación de conexión**: Verifica y reconecta automáticamente antes de ejecutar la operación
 
-**Notificaciones push**: Envía notificación push con `SendNotification()` de MetaTrader cuando falla (ver sección "Sistema de Notificaciones Push")
+**Notificaciones push**: Envía notificación push con `SendNotification()` de MetaTrader cuando se ejecuta exitosamente o cuando falla (ver sección "Sistema de Notificaciones Push")
 
 ---
 
@@ -1251,7 +1251,7 @@ Si `CUENTA_FONDEO = True`, al iniciar se solicita:
 - **Comportamiento**: Envía notificaciones push usando `SendNotification()` de MetaTrader
 - **Uso**: 
   - Notificar inicio del sistema ("Activado ClonadorMQ5.py")
-  - Notificar fallos en OPEN, CLOSE y MODIFY (ver sección "Sistema de Notificaciones Push")
+  - Notificar éxitos y fallos en OPEN, CLOSE y MODIFY (ver sección "Sistema de Notificaciones Push")
 
 ---
 
@@ -1286,7 +1286,7 @@ event_type;ticket;order_type;lots;symbol;sl;tp
 ### Propósito
 Enviar notificaciones push al dispositivo móvil para:
 - **Inicio del sistema**: Notificar cuando el clonador se activa
-- **Éxitos en operaciones**: Notificar cuando OPEN se ejecuta exitosamente
+- **Éxitos en operaciones**: Notificar cuando OPEN, CLOSE y MODIFY se ejecutan exitosamente
 - **Fallos en operaciones**: Notificar cuando fallan operaciones críticas (OPEN, CLOSE, MODIFY), permitiendo al usuario estar informado inmediatamente de problemas en el sistema de clonación
 
 ### Implementación Técnica
@@ -1355,41 +1355,53 @@ Enviar notificaciones push al dispositivo móvil para:
   - Las notificaciones se envían inmediatamente después de detectar el resultado, antes de retornar
 
 #### CLOSE
-- **Cuándo se notifica**: Solo el primer fallo por ticket (evita notificaciones duplicadas en reintentos)
-- **Formato del mensaje**: `"Ticket: XXXXX - CLOSE FALLO: (retcode, 'comment')"`
+- **Cuándo se notifica**: 
+  - **Éxito**: Cada vez que se ejecuta exitosamente una operación CLOSE
+  - **Fallo**: Solo el primer fallo por ticket (evita notificaciones duplicadas en reintentos)
+- **Formato del mensaje**:
+  - **Éxito**: `"Ticket: XXXXX - CLOSE EXITOSO: SYMBOL ORDER_TYPE LOTS lots"`
+  - **Fallo**: `"Ticket: XXXXX - CLOSE FALLO: (retcode, 'comment')"`
 - **Ejemplos**: 
-  - `"Ticket: 40014799 - CLOSE FALLO: (10031, 'Request rejected due to absence of network connection')"`
-  - `"Ticket: 40014799 - CLOSE FALLO: (None, 'order_send retornó None')"`
+  - Éxito: `"Ticket: 40014799 - CLOSE EXITOSO: XAUUSD BUY 0.04 lots"`
+  - Fallo: `"Ticket: 40014799 - CLOSE FALLO: (10031, 'Request rejected due to absence of network connection')"`
+  - Fallo: `"Ticket: 40014799 - CLOSE FALLO: (None, 'order_send retornó None')"`
 - **Características**:
-  - Usa un set en memoria (`notified_close_tickets`) para rastrear tickets ya notificados
-  - Verifica si el ticket está en el set antes de enviar: `if ev.master_ticket not in notified_close_tickets:`
-  - Si no está en el set:
+  - **Notificación de éxito**: Se envía cuando `retcode` es `TRADE_RETCODE_DONE`, se envía inmediatamente después de detectar el éxito, antes de retornar
+  - **Notificación de fallo**: Usa un set en memoria (`notified_close_tickets`) para rastrear tickets ya notificados
+  - Verifica si el ticket está en el set antes de enviar fallo: `if ev.master_ticket not in notified_close_tickets:`
+  - Si no está en el set (fallo):
     - Envía la notificación push
     - Agrega el ticket al set: `notified_close_tickets.add(ev.master_ticket)`
-  - Si ya está en el set: No envía notificación (ya se notificó antes)
+  - Si ya está en el set: No envía notificación de fallo (ya se notificó antes)
   - Remueve el ticket del set cuando:
     - Se cierra exitosamente (CLOSE OK): `notified_close_tickets.discard(ev.master_ticket)`
     - Se elimina del CSV por cualquier motivo (ej: "No existe operacion abierta"): `notified_close_tickets.discard(ev.master_ticket)`
-  - Evita notificaciones duplicadas en múltiples reintentos del mismo ticket
+  - Evita notificaciones duplicadas de fallo en múltiples reintentos del mismo ticket
   - Maneja tanto errores de `order_send` como cuando retorna `None`
 
 #### MODIFY
-- **Cuándo se notifica**: Solo el primer fallo por ticket (evita notificaciones duplicadas en reintentos)
-- **Formato del mensaje**: `"Ticket: XXXXX - MODIFY FALLO: (retcode, 'comment')"`
+- **Cuándo se notifica**: 
+  - **Éxito**: Cada vez que se ejecuta exitosamente una operación MODIFY
+  - **Fallo**: Solo el primer fallo por ticket (evita notificaciones duplicadas en reintentos)
+- **Formato del mensaje**:
+  - **Éxito**: `"Ticket: XXXXX - MODIFY EXITOSO: SYMBOL ORDER_TYPE LOTS lots SL=XXX TP=YYY"`
+  - **Fallo**: `"Ticket: XXXXX - MODIFY FALLO: (retcode, 'comment')"`
 - **Ejemplos**: 
-  - `"Ticket: 40014799 - MODIFY FALLO: (10031, 'Request rejected due to absence of network connection')"`
-  - `"Ticket: 40014799 - MODIFY FALLO: (None, 'order_send retornó None')"`
+  - Éxito: `"Ticket: 40014799 - MODIFY EXITOSO: XAUUSD BUY 0.04 lots SL=4329.19 TP=4350.00"`
+  - Fallo: `"Ticket: 40014799 - MODIFY FALLO: (10031, 'Request rejected due to absence of network connection')"`
+  - Fallo: `"Ticket: 40014799 - MODIFY FALLO: (None, 'order_send retornó None')"`
 - **Características**:
-  - Usa un set en memoria (`notified_modify_tickets`) para rastrear tickets ya notificados
-  - Verifica si el ticket está en el set antes de enviar: `if ev.master_ticket not in notified_modify_tickets:`
-  - Si no está en el set:
+  - **Notificación de éxito**: Se envía cuando `retcode` es `TRADE_RETCODE_DONE` o `TRADE_RETCODE_NO_CHANGES`, se envía inmediatamente después de detectar el éxito, antes de retornar
+  - **Notificación de fallo**: Usa un set en memoria (`notified_modify_tickets`) para rastrear tickets ya notificados
+  - Verifica si el ticket está en el set antes de enviar fallo: `if ev.master_ticket not in notified_modify_tickets:`
+  - Si no está en el set (fallo):
     - Envía la notificación push
     - Agrega el ticket al set: `notified_modify_tickets.add(ev.master_ticket)`
-  - Si ya está en el set: No envía notificación (ya se notificó antes)
+  - Si ya está en el set: No envía notificación de fallo (ya se notificó antes)
   - Remueve el ticket del set cuando:
     - Se modifica exitosamente (MODIFY OK): `notified_modify_tickets.discard(ev.master_ticket)`
     - Se elimina del CSV por cualquier motivo (ej: "No existe operacion abierta"): `notified_modify_tickets.discard(ev.master_ticket)`
-  - Evita notificaciones duplicadas en múltiples reintentos del mismo ticket
+  - Evita notificaciones duplicadas de fallo en múltiples reintentos del mismo ticket
   - Maneja tanto errores de `order_send` como cuando retorna `None`
 
 ### Gestión de Memoria
@@ -1413,13 +1425,13 @@ Operación ejecutada
     │   └─ Fallo → Notificar siempre: "Ticket: XXXXX - OPEN FALLO: ..."
     │
     ├─ CLOSE → 
-    │   ├─ Éxito → No notificar
+    │   ├─ Éxito → Notificar siempre: "Ticket: XXXXX - CLOSE EXITOSO: ..."
     │   └─ Fallo → Verificar si ticket está en notified_close_tickets
     │       ├─ No está → Notificar y agregar al set
     │       └─ Está → No notificar (ya se notificó antes)
     │
     └─ MODIFY → 
-        ├─ Éxito → No notificar
+        ├─ Éxito → Notificar siempre: "Ticket: XXXXX - MODIFY EXITOSO: ..."
         └─ Fallo → Verificar si ticket está en notified_modify_tickets
             ├─ No está → Notificar y agregar al set
             └─ Está → No notificar (ya se notificó antes)
@@ -1435,6 +1447,11 @@ Ticket: 40014799 - OPEN EXITOSO: XAUUSD BUY 0.04 lots
 **OPEN fallido**:
 ```
 Ticket: 40014799 - OPEN FALLO: (10004, 'Invalid price')
+```
+
+**CLOSE exitoso**:
+```
+Ticket: 40014799 - CLOSE EXITOSO: XAUUSD BUY 0.04 lots
 ```
 
 **CLOSE fallido (primer intento)**:
@@ -1551,15 +1568,17 @@ def send_push_notification(message: str) -> bool:
 - Las notificaciones se envían inmediatamente después de detectar el resultado, antes de retornar
 
 **CLOSE** (`close_clone()`):
-- Se verifica si el ticket está en `notified_close_tickets` antes de enviar
-- Se envía cuando `order_send` retorna `None` (si no está en el set)
-- Se envía cuando `retcode` no es `TRADE_RETCODE_DONE` (si no está en el set)
-- Se agrega al set después de enviar la notificación
+- **Éxito**: Se envía siempre cuando `retcode` es `TRADE_RETCODE_DONE`, formato: `"Ticket: XXXXX - CLOSE EXITOSO: SYMBOL ORDER_TYPE LOTS lots"`
+- **Fallo**: Se verifica si el ticket está en `notified_close_tickets` antes de enviar
+  - Se envía cuando `order_send` retorna `None` (si no está en el set)
+  - Se envía cuando `retcode` no es `TRADE_RETCODE_DONE` (si no está en el set)
+  - Se agrega al set después de enviar la notificación de fallo
 
 **MODIFY** (`modify_clone()`):
-- Se verifica si el ticket está en `notified_modify_tickets` antes de enviar
-- Se envía cuando `order_send` retorna `None` o cuando `retcode` no es éxito (si no está en el set)
-- Se agrega al set después de enviar la notificación
+- **Éxito**: Se envía siempre cuando `retcode` es `TRADE_RETCODE_DONE` o `TRADE_RETCODE_NO_CHANGES`, formato: `"Ticket: XXXXX - MODIFY EXITOSO: SYMBOL ORDER_TYPE LOTS lots SL=XXX TP=YYY"`
+- **Fallo**: Se verifica si el ticket está en `notified_modify_tickets` antes de enviar
+  - Se envía cuando `order_send` retorna `None` o cuando `retcode` no es éxito (si no está en el set)
+  - Se agrega al set después de enviar la notificación de fallo
 
 **Limpieza de Sets** (`main_loop()`):
 - Se remueven tickets de `notified_close_tickets` cuando CLOSE es exitoso o se elimina del CSV
@@ -1568,7 +1587,7 @@ def send_push_notification(message: str) -> bool:
 
 ### Ventajas del Sistema
 1. **Alertas inmediatas**: El usuario recibe notificaciones push en tiempo real cuando algo ocurre (éxito o fallo)
-2. **Confirmación de operaciones**: Notifica cuando OPEN se ejecuta exitosamente, permitiendo verificar que las operaciones se están clonando correctamente
+2. **Confirmación de operaciones**: Notifica cuando OPEN, CLOSE y MODIFY se ejecutan exitosamente, permitiendo verificar que las operaciones se están clonando correctamente y tener control total sobre todas las operaciones
 3. **Sin spam**: Evita notificaciones duplicadas para CLOSE y MODIFY en múltiples reintentos
 4. **Información completa**: Incluye número de error y mensaje descriptivo de MetaTrader para diagnóstico
 5. **Gestión eficiente de memoria**: Limpia automáticamente los sets cuando los tickets se procesan exitosamente

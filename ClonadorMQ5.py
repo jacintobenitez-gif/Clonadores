@@ -357,6 +357,9 @@ def close_clone(ev: Ev) -> tuple[bool, str]:
         return (False, "FALLO")  # Fallo, mantener en CSV para reintento
     
     if res.retcode == mt5.TRADE_RETCODE_DONE:
+        # Enviar notificación push para CLOSE (éxito)
+        notification_msg = f"Ticket: {ev.master_ticket} - CLOSE EXITOSO: {ev.symbol} {ev.order_type} {p.volume} lots"
+        send_push_notification(notification_msg)
         return (True, "CLOSE OK")  # Éxito
     
     # Cualquier error (incluyendo 10031): mantener en CSV para reintento hasta que se cierre la operación
@@ -403,6 +406,11 @@ def modify_clone(ev: Ev) -> tuple[bool, str]:
     
     # Verificar resultado
     if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_NO_CHANGES):
+        # Enviar notificación push para MODIFY (éxito)
+        sl_str = f"{ev.sl:.5f}" if ev.sl > 0 else "0.00"
+        tp_str = f"{ev.tp:.5f}" if ev.tp > 0 else "0.00"
+        notification_msg = f"Ticket: {ev.master_ticket} - MODIFY EXITOSO: {ev.symbol} {ev.order_type} {p.volume} lots SL={sl_str} TP={tp_str}"
+        send_push_notification(notification_msg)
         return (True, "MODIFY OK")  # Éxito, eliminar del CSV
     
     # Cualquier error (incluyendo 10031): mantener en CSV para reintento hasta que se cierre la operación
