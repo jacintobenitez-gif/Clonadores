@@ -3,7 +3,7 @@
 //|                                  Copyright 2025, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //|   Lee aperturas y cierres y los escribe en Common\Files          |
-//|   Fichero: TradeEvents.txt (compartido por todos los MT4/MT5)    |
+//|   Fichero: Master.txt (compartido por todos los MT4/MT5)    |
 //|   v1.1: añade columnas SL y TP                                   |
 //|   v1.2: detecta cambios en SL/TP y escribe eventos MODIFY        |
 //|   v1.3: elimina campos magic y comment, usa FILE_TXT              |
@@ -15,7 +15,7 @@
 #property strict
 
 // Nombre del fichero TXT (en carpeta COMMON\Files)
-input string InpCSVFileName = "TradeEvents.txt";
+input string InpCSVFileName = "Master.txt";
 // Timer en segundos para revisar cambios
 input int    InpTimerSeconds = 1;  // Revisar cada 1 segundo (alineado con clonadores)
 

@@ -29,8 +29,8 @@
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ ARCHIVO COMPARTIDO (TradeEvents.txt)                           │
-│    - Ubicación: COMMON\Files\TradeEvents.txt                    │
+│ ARCHIVO COMPARTIDO (Master.txt)                           │
+│    - Ubicación: COMMON\Files\Master.txt                    │
 │    - Formato: event_type;ticket;order_type;lots;symbol;sl;tp   │
 │    - Codificación: UTF-8                                        │
 │    - Ejemplos escritos:                                         │
@@ -44,7 +44,7 @@
 │ SISTEMAS CONSUMIDORES                                          │
 │    - ClonadorMQ5.py (Python)                                    │
 │    - ClonadorMQ5.mq5 (MQL5)                                     │
-│    - Cualquier otro sistema que lea TradeEvents.txt            │
+│    - Cualquier otro sistema que lea Master.txt            │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -212,7 +212,7 @@ MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00
 - **Escenario**: Trader opera en MT4, quiere replicar operaciones en MT5
 - **Proceso**: 
   1. `LectorOrdenes.mq4` detecta cambios en MT4
-  2. Escribe eventos a `TradeEvents.txt`
+  2. Escribe eventos a `Master.txt`
   3. `ClonadorMQ5.py` lee y clona operaciones en MT5
 - **Resultado**: Operaciones sincronizadas entre ambas plataformas
 
@@ -267,7 +267,7 @@ MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00
 - **Versión**: 1.7
 - **Tipo**: Expert Advisor (EA) para MetaTrader 4
 - **Propósito**: Monitorear operaciones en MT4 y escribir eventos (OPEN, CLOSE, MODIFY) en un archivo compartido
-- **Archivo de salida**: `TradeEvents.txt` (en carpeta COMMON\Files)
+- **Archivo de salida**: `Master.txt` (en carpeta COMMON\Files)
 - **Codificación**: UTF-8
 
 ---
@@ -434,7 +434,7 @@ struct OrderState
 ### 4. Funciones de Escritura de Archivo
 
 #### `AppendEventToCSV(...)`
-**Propósito**: Escribir una línea de evento al archivo `TradeEvents.txt` en UTF-8.
+**Propósito**: Escribir una línea de evento al archivo `Master.txt` en UTF-8.
 
 **Parámetros**:
 - `eventType`: Tipo de evento ("OPEN", "CLOSE", "MODIFY")
@@ -468,12 +468,12 @@ OPEN;39924291;BUY;0.04;XAUUSD;4288.04;4290.00
 - **Codificación**: UTF-8 (sin BOM)
 - **Delimitador**: Punto y coma (`;`)
 - **Salto de línea**: `\n` (LF, 0x0A)
-- **Ubicación**: `COMMON\Files\TradeEvents.txt` (compartido entre todos los MT4/MT5)
+- **Ubicación**: `COMMON\Files\Master.txt` (compartido entre todos los MT4/MT5)
 
 ---
 
 #### `InitCSVIfNeeded()`
-**Propósito**: Crear el archivo `TradeEvents.txt` con la cabecera si no existe.
+**Propósito**: Crear el archivo `Master.txt` con la cabecera si no existe.
 
 **Proceso**:
 1. Intenta abrir el archivo en modo lectura
@@ -506,7 +506,7 @@ event_type;ticket;order_type;lots;symbol;sl;tp
 5. Retorna `INIT_SUCCEEDED`
 
 **Parámetros de entrada**:
-- `InpCSVFileName`: Nombre del archivo (por defecto: "TradeEvents.txt")
+- `InpCSVFileName`: Nombre del archivo (por defecto: "Master.txt")
 - `InpTimerSeconds`: Intervalo del timer en segundos (por defecto: 1)
 
 ---
@@ -827,7 +827,7 @@ El EA detecta y procesa los siguientes tipos de órdenes:
 
 ### Ubicación
 - **Carpeta**: `COMMON\Files\`
-- **Ruta completa típica**: `C:\Users\[Usuario]\AppData\Roaming\MetaQuotes\Terminal\Common\Files\TradeEvents.txt`
+- **Ruta completa típica**: `C:\Users\[Usuario]\AppData\Roaming\MetaQuotes\Terminal\Common\Files\Master.txt`
 - **Compartido**: Sí, accesible por todos los MT4 y MT5 en el mismo terminal
 
 ### Modo de Apertura
@@ -907,7 +907,7 @@ MT4 Terminal
     │   │
     │   └─ Escribe eventos al archivo
     │
-    └─ TradeEvents.txt (UTF-8)
+    └─ Master.txt (UTF-8)
         │
         └─ Leído por ClonadorMQ5.py / ClonadorMQ5.mq5
 ```
@@ -930,7 +930,7 @@ CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800
 
 ### `InpCSVFileName`
 - **Tipo**: `string`
-- **Valor por defecto**: `"TradeEvents.txt"`
+- **Valor por defecto**: `"Master.txt"`
 - **Propósito**: Nombre del archivo donde se escriben los eventos
 - **Ubicación**: Carpeta COMMON\Files
 
@@ -968,7 +968,7 @@ CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800
 
 ### Caso 1: Monitoreo de una cuenta MT4
 - **Escenario**: Un EA en un gráfico monitorea todas las operaciones de la cuenta
-- **Resultado**: Archivo `TradeEvents.txt` con todos los eventos de la cuenta
+- **Resultado**: Archivo `Master.txt` con todos los eventos de la cuenta
 
 ### Caso 2: Múltiples instancias
 - **Escenario**: Varios EAs en diferentes gráficos escriben al mismo archivo
@@ -1082,5 +1082,5 @@ if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
 5. **Optimiza** el rendimiento usando timer en lugar de OnTick()
 6. **Maneja** errores de forma robusta sin bloquear el EA
 
-El archivo generado (`TradeEvents.txt`) sirve como punto de integración entre MT4 y sistemas externos para clonación automática de operaciones.
+El archivo generado (`Master.txt`) sirve como punto de integración entre MT4 y sistemas externos para clonación automática de operaciones.
 
