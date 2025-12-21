@@ -1,0 +1,16 @@
+# Configuración de Distribuidor.py (hot-reload)
+# Líneas vacías o que empiezan por # se ignoran
+# Formato: clave=valor
+
+# Ruta a Common\Files (dejar vacío para usar ruta por defecto de MetaTrader)
+common_files_dir=
+
+# Nombre del fichero maestro
+master_filename=Master.txt
+
+# Lista de workers (separados por coma)
+worker_ids=01
+
+# Intervalo de sondeo en segundos
+poll_seconds=1.0
+

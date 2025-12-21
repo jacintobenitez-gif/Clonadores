@@ -163,3 +163,36 @@ Con Distribuidor.py funcionando:
 * El origen se mantiene controlado en tamaño mediante recorte.
 * El sistema resiste escrituras parciales, formatos incorrectos y cabeceras sin romperse.
 
+---
+
+## 10. Configuración (externa y hot-reload)
+
+### 10.1 Fichero de configuración (txt)
+
+* **Nombre**: `distribuidor_config.txt`
+* **Ubicación**: misma carpeta donde reside `Distribuidor.py`
+* **Formato**: fichero plano `clave=valor`, una clave por línea. Líneas vacías o que empiezan por `#` se ignoran.
+* **Campos**:
+  * `common_files_dir`: ruta a `Common\Files`. Si está vacío se usa la ruta por defecto de MetaTrader.
+  * `master_filename`: nombre del fichero maestro (por defecto `Master.txt`).
+  * `worker_ids`: lista de workers separada por comas, p.ej. `01,02,03`.
+  * `poll_seconds`: intervalo de sondeo en segundos, p.ej. `1.0`.
+
+### 10.2 Variables de entorno (prioridad máxima)
+
+* `COMMON_FILES_DIR`: sobrescribe `common_files_dir`.
+* `MASTER_FILENAME`: sobrescribe `master_filename`.
+* `WORKER_IDS`: sobrescribe `worker_ids` con formato `01,02,03`.
+* `POLL_SECONDS`: sobrescribe `poll_seconds`.
+
+### 10.3 Orden de prioridad
+
+1. Variables de entorno
+2. Fichero `distribuidor_config.txt`
+3. Valores por defecto
+
+### 10.4 Hot-reload
+
+* El servicio recarga la configuración **en cada ciclo**.
+* Permite modificar `distribuidor_config.txt` o las variables de entorno sin reiniciar.
+

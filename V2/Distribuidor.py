@@ -18,36 +18,128 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
 
-# Configuración
-MASTER_FILENAME = "Master.txt"
-# Lista de workers, configurable vía env WORKER_IDS="01,02,03"
+# Configuración por defecto
+DEFAULT_MASTER_FILENAME = "Master.txt"
 DEFAULT_WORKER_IDS = ["01"]
-POLL_SECONDS = float(os.getenv("POLL_SECONDS", "1.0"))
+DEFAULT_POLL_SECONDS = 1.0
+CONFIG_FILENAME = "distribuidor_config.txt"  # Fichero de configuración externa (hot-reload)
 
 
-def get_common_files_dir() -> Path:
-    """
-    Devuelve la ruta base de Common\Files.
-    Se puede sobreescribir con la variable de entorno COMMON_FILES_DIR.
-    """
-    env_path = os.getenv("COMMON_FILES_DIR")
-    if env_path:
-        return Path(env_path)
-
-    # Valor por defecto (habitual en MetaTrader)
+def default_common_files_dir() -> Path:
+    """Ruta por defecto de Common\\Files (MetaTrader)."""
     home = Path.home()
-    default_path = home / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files"
-    return default_path
+    return home / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files"
 
 
-def parse_worker_ids() -> List[str]:
-    env_value = os.getenv("WORKER_IDS")
-    if env_value:
-        return [w.strip() for w in env_value.split(",") if w.strip()]
-    return DEFAULT_WORKER_IDS
+def env_list(name: str) -> List[str] | None:
+    value = os.getenv(name)
+    if not value:
+        return None
+    return [w.strip() for w in value.split(",") if w.strip()]
+
+
+def env_float(name: str) -> float | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def load_file_config(cfg_path: Path) -> dict:
+    """
+    Lee un fichero plano key=value (una clave por línea).
+    Formato esperado:
+      common_files_dir=C:\\Users\\...\\Common\\Files
+      master_filename=Master.txt
+      worker_ids=01,02,03
+      poll_seconds=1.0
+    Líneas vacías o que empiezan por # se ignoran.
+    """
+    cfg: dict = {}
+    if not cfg_path.exists():
+        return cfg
+    try:
+        for raw in cfg_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            cfg[key] = value
+    except Exception as exc:
+        print(f"[WARN] No se pudo leer {cfg_path}: {exc}")
+    return cfg
+
+
+@dataclass
+class Config:
+    common_dir: Path
+    master_filename: str
+    worker_ids: List[str]
+    poll_seconds: float
+
+
+def load_config() -> Config:
+    """
+    Carga configuración en este orden de prioridad (hot-reload):
+    1) Variables de entorno
+    2) Fichero distribuidor_config.txt (en la misma carpeta que este script)
+    3) Valores por defecto
+    """
+    cfg_path = Path(__file__).resolve().parent / CONFIG_FILENAME
+    file_cfg = load_file_config(cfg_path)
+
+    env_common = os.getenv("COMMON_FILES_DIR")
+    file_common = file_cfg.get("common_files_dir")
+    common_dir = (
+        Path(env_common)
+        if env_common
+        else Path(file_common)
+        if file_common
+        else default_common_files_dir()
+    )
+
+    master_filename = (
+        os.getenv("MASTER_FILENAME")
+        or file_cfg.get("master_filename")
+        or DEFAULT_MASTER_FILENAME
+    )
+
+    worker_ids = (
+        env_list("WORKER_IDS")
+        or ([w.strip() for w in file_cfg.get("worker_ids", "").split(",") if w.strip()])
+        or DEFAULT_WORKER_IDS
+    )
+
+    poll_seconds = env_float("POLL_SECONDS")
+    if poll_seconds is None:
+        file_poll = file_cfg.get("poll_seconds")
+        if file_poll:
+            try:
+                poll_seconds = float(file_poll)
+            except ValueError:
+                poll_seconds = None
+    if poll_seconds is None:
+        poll_seconds = DEFAULT_POLL_SECONDS
+
+    return Config(
+        common_dir=common_dir,
+        master_filename=master_filename,
+        worker_ids=worker_ids,
+        poll_seconds=float(poll_seconds),
+    )
 
 
 def detect_header(lines: List[str]) -> Tuple[int, str | None]:
@@ -144,20 +236,24 @@ def rewrite_master(
 
 
 def run_service() -> None:
-    common_dir = get_common_files_dir()
-    master_path = common_dir / MASTER_FILENAME
-    queues_dir = common_dir  # mismas Common\Files para las colas
-    worker_ids = parse_worker_ids()
-
-    print(f"[INIT] Distribuidor arrancado. Master: {master_path}")
-    print(f"[INIT] Workers: {worker_ids}")
-    print(f"[INIT] Intervalo de sondeo: {POLL_SECONDS}s")
+    cfg = load_config()
+    print(f"[INIT] Distribuidor arrancado.")
+    print(f"[INIT] Master: {cfg.common_dir / cfg.master_filename}")
+    print(f"[INIT] Workers: {cfg.worker_ids}")
+    print(f"[INIT] Intervalo de sondeo: {cfg.poll_seconds}s")
 
     while True:
         try:
+            # Hot-reload de configuración en cada ciclo
+            cfg = load_config()
+            master_path = cfg.common_dir / cfg.master_filename
+            queues_dir = cfg.common_dir  # mismas Common\Files para las colas
+            worker_ids = cfg.worker_ids
+            poll_seconds = cfg.poll_seconds
+
             if not master_path.exists():
                 print(f"[WARN] Master no encontrado: {master_path}")
-                time.sleep(POLL_SECONDS)
+                time.sleep(poll_seconds)
                 continue
 
             original_size = master_path.stat().st_size
@@ -178,7 +274,7 @@ def run_service() -> None:
 
             if not valid_lines:
                 # Nada que distribuir; respetar cabecera e incompletas
-                time.sleep(POLL_SECONDS)
+                time.sleep(poll_seconds)
                 continue
 
             try:
@@ -186,7 +282,7 @@ def run_service() -> None:
                 print(f"[OK] Distribuidas {total_valid} líneas a {len(worker_ids)} colas")
             except Exception as exc:
                 print(f"[ERROR] Falló la distribución: {exc}")
-                time.sleep(POLL_SECONDS)
+                time.sleep(poll_seconds)
                 continue  # No recortar para no perder eventos
 
             recorte = rewrite_master(master_path, header_line, invalid_lines, incomplete_lines)
@@ -197,7 +293,7 @@ def run_service() -> None:
             # Cualquier error no debe detener el servicio
             print(f"[ERROR] Ciclo falló: {exc}")
 
-        time.sleep(POLL_SECONDS)
+        time.sleep(poll_seconds)
 
 
 if __name__ == "__main__":
