@@ -20,13 +20,14 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 # Configuración por defecto
 DEFAULT_MASTER_FILENAME = "Master.txt"
 DEFAULT_WORKER_IDS = ["01"]
 DEFAULT_POLL_SECONDS = 1.0
 CONFIG_FILENAME = "distribuidor_config.txt"  # Fichero de configuración externa (hot-reload)
+DEFAULT_RELOAD_MINUTES = 15.0  # Intervalo de recarga de config
 
 
 def default_common_files_dir() -> Path:
@@ -63,7 +64,9 @@ def load_file_config(cfg_path: Path) -> dict:
     Líneas vacías o que empiezan por # se ignoran.
     """
     cfg: dict = {}
+    workers: List[str] = []
     if not cfg_path.exists():
+        cfg["worker_ids_list"] = workers
         return cfg
     try:
         for raw in cfg_path.read_text(encoding="utf-8").splitlines():
@@ -77,9 +80,13 @@ def load_file_config(cfg_path: Path) -> dict:
             value = value.strip()
             if not key:
                 continue
-            cfg[key] = value
+            if key == "worker_id":
+                workers.append(value)
+            else:
+                cfg[key] = value
     except Exception as exc:
         print(f"[WARN] No se pudo leer {cfg_path}: {exc}")
+    cfg["worker_ids_list"] = workers
     return cfg
 
 
@@ -89,6 +96,7 @@ class Config:
     master_filename: str
     worker_ids: List[str]
     poll_seconds: float
+    reload_minutes: float
 
 
 def load_config() -> Config:
@@ -117,11 +125,16 @@ def load_config() -> Config:
         or DEFAULT_MASTER_FILENAME
     )
 
-    worker_ids = (
-        env_list("WORKER_IDS")
-        or ([w.strip() for w in file_cfg.get("worker_ids", "").split(",") if w.strip()])
-        or DEFAULT_WORKER_IDS
-    )
+    worker_ids: Optional[List[str]] = env_list("WORKER_IDS")
+    if worker_ids is None:
+        cfg_workers = file_cfg.get("worker_ids_list", [])
+        if cfg_workers:
+            worker_ids = cfg_workers
+        else:
+            comma_workers = file_cfg.get("worker_ids", "")
+            worker_ids = [w.strip() for w in comma_workers.split(",") if w.strip()]
+    if not worker_ids:
+        worker_ids = DEFAULT_WORKER_IDS
 
     poll_seconds = env_float("POLL_SECONDS")
     if poll_seconds is None:
@@ -134,12 +147,43 @@ def load_config() -> Config:
     if poll_seconds is None:
         poll_seconds = DEFAULT_POLL_SECONDS
 
+    reload_minutes = env_float("CONFIG_RELOAD_MINUTES")
+    if reload_minutes is None:
+        file_reload = file_cfg.get("reload_minutes")
+        if file_reload:
+            try:
+                reload_minutes = float(file_reload)
+            except ValueError:
+                reload_minutes = None
+    if reload_minutes is None:
+        reload_minutes = DEFAULT_RELOAD_MINUTES
+
     return Config(
         common_dir=common_dir,
         master_filename=master_filename,
         worker_ids=worker_ids,
         poll_seconds=float(poll_seconds),
+        reload_minutes=float(reload_minutes),
     )
+
+
+_CACHED_CONFIG: Optional[Config] = None
+_LAST_CONFIG_LOAD: float = 0.0
+
+
+def get_config() -> Config:
+    """Recarga configuración cada reload_minutes (por defecto 15)."""
+    global _CACHED_CONFIG, _LAST_CONFIG_LOAD
+    now = time.time()
+    if _CACHED_CONFIG is None:
+        _CACHED_CONFIG = load_config()
+        _LAST_CONFIG_LOAD = now
+        return _CACHED_CONFIG
+    interval = _CACHED_CONFIG.reload_minutes * 60.0
+    if now - _LAST_CONFIG_LOAD >= interval:
+        _CACHED_CONFIG = load_config()
+        _LAST_CONFIG_LOAD = now
+    return _CACHED_CONFIG
 
 
 def detect_header(lines: List[str]) -> Tuple[int, str | None]:
@@ -236,16 +280,17 @@ def rewrite_master(
 
 
 def run_service() -> None:
-    cfg = load_config()
+    cfg = get_config()
     print(f"[INIT] Distribuidor arrancado.")
     print(f"[INIT] Master: {cfg.common_dir / cfg.master_filename}")
     print(f"[INIT] Workers: {cfg.worker_ids}")
     print(f"[INIT] Intervalo de sondeo: {cfg.poll_seconds}s")
+    print(f"[INIT] Recarga config cada: {cfg.reload_minutes} minutos")
 
     while True:
         try:
-            # Hot-reload de configuración en cada ciclo
-            cfg = load_config()
+            # Hot-reload de configuración cada intervalo configurable
+            cfg = get_config()
             master_path = cfg.common_dir / cfg.master_filename
             queues_dir = cfg.common_dir  # mismas Common\Files para las colas
             worker_ids = cfg.worker_ids

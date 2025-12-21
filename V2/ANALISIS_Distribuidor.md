@@ -175,8 +175,9 @@ Con Distribuidor.py funcionando:
 * **Campos**:
   * `common_files_dir`: ruta a `Common\Files`. Si está vacío se usa la ruta por defecto de MetaTrader.
   * `master_filename`: nombre del fichero maestro (por defecto `Master.txt`).
-  * `worker_ids`: lista de workers separada por comas, p.ej. `01,02,03`.
+  * `worker_id`: se puede repetir una línea por cada worker, p.ej. tres líneas `worker_id=01`, `worker_id=02`, `worker_id=03` significan 3 workers. (Compatibilidad: si existe `worker_ids` con comas se usa, pero la forma preferida es una línea por worker).
   * `poll_seconds`: intervalo de sondeo en segundos, p.ej. `1.0`.
+  * `reload_minutes`: intervalo en minutos para recargar la configuración en caliente (por defecto 15).
 
 ### 10.2 Variables de entorno (prioridad máxima)
 
@@ -184,6 +185,7 @@ Con Distribuidor.py funcionando:
 * `MASTER_FILENAME`: sobrescribe `master_filename`.
 * `WORKER_IDS`: sobrescribe `worker_ids` con formato `01,02,03`.
 * `POLL_SECONDS`: sobrescribe `poll_seconds`.
+* `CONFIG_RELOAD_MINUTES`: sobrescribe `reload_minutes`.
 
 ### 10.3 Orden de prioridad
 
@@ -193,6 +195,6 @@ Con Distribuidor.py funcionando:
 
 ### 10.4 Hot-reload
 
-* El servicio recarga la configuración **en cada ciclo**.
-* Permite modificar `distribuidor_config.txt` o las variables de entorno sin reiniciar.
+* El servicio recarga la configuración cada `reload_minutes` (por defecto 15 minutos).
+* Permite modificar `distribuidor_config.txt` (añadir/quitar workers) o las variables de entorno sin reiniciar.
 

@@ -8,9 +8,13 @@ common_files_dir=
 # Nombre del fichero maestro
 master_filename=Master.txt
 
-# Lista de workers (separados por coma)
-worker_ids=01
+# Lista de workers (una línea por worker)
+worker_id=01
+worker_id=02
 
 # Intervalo de sondeo en segundos
 poll_seconds=1.0
+
+# Intervalo de recarga de config en minutos
+reload_minutes=15
 
