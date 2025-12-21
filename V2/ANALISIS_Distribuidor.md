@@ -36,6 +36,7 @@ Por cada Worker existe una cola dedicada:
 
 * **Formato**: ficheros TXT (UTF-8)
 * **Naming**: `cola_WORKER_XX.txt` (una por cada Worker configurado)
+* **Regla**: cada evento se escribe en una única línea con salto de línea al final (sin concatenar eventos).
 * **Finalidad**: cada Worker lee **solo su propia cola** y ejecuta lo que corresponda.
 
 ---

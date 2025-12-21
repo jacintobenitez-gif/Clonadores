@@ -245,10 +245,12 @@ def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[
     Escribe cada línea válida en todas las colas de workers.
     """
     queues_dir.mkdir(parents=True, exist_ok=True)
+    # Asegurar que cada línea termina en salto de línea para evitar concatenaciones
+    lines_to_write = [ln if ln.endswith("\n") else ln + "\n" for ln in valid_lines]
     for worker_id in worker_ids:
         queue_path = queues_dir / f"cola_WORKER_{worker_id}.txt"
         with open(queue_path, "a", encoding="utf-8", newline="") as fh:
-            fh.writelines(valid_lines)
+            fh.writelines(lines_to_write)
 
 
 def rewrite_master(
