@@ -6,7 +6,7 @@ Servicio 24/7 que:
 - Lee eventos completos desde `Master.txt` (Common\Files)
 - Valida que cada línea tenga exactamente 7 campos
 - Ignora cabecera (si existe) y líneas incompletas (sin '\n')
-- Distribuye cada evento válido a todas las colas `cola_WORKER_XX.csv`
+- Distribuye cada evento válido a todas las colas `cola_WORKER_XX.txt` (UTF-8)
 - Recorta `Master.txt` eliminando los eventos ya distribuidos
 - Registra actividad sin bloquearse ante errores
 
@@ -246,7 +246,7 @@ def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[
     """
     queues_dir.mkdir(parents=True, exist_ok=True)
     for worker_id in worker_ids:
-        queue_path = queues_dir / f"cola_WORKER_{worker_id}.csv"
+        queue_path = queues_dir / f"cola_WORKER_{worker_id}.txt"
         with open(queue_path, "a", encoding="utf-8", newline="") as fh:
             fh.writelines(valid_lines)
 

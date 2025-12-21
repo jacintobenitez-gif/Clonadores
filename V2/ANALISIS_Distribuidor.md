@@ -34,8 +34,8 @@ El origen es un fichero único:
 
 Por cada Worker existe una cola dedicada:
 
-* **Formato**: ficheros CSV
-* **Naming**: `cola_WORKER_XX.csv` (una por cada Worker configurado)
+* **Formato**: ficheros TXT (UTF-8)
+* **Naming**: `cola_WORKER_XX.txt` (una por cada Worker configurado)
 * **Finalidad**: cada Worker lee **solo su propia cola** y ejecuta lo que corresponda.
 
 ---
