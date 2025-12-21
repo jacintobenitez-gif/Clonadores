@@ -291,6 +291,7 @@ def run_service() -> None:
 
     while True:
         try:
+            cycle_start = time.time()
             # Hot-reload de configuración cada intervalo configurable
             cfg = get_config()
             master_path = cfg.common_dir / cfg.master_filename
@@ -335,6 +336,9 @@ def run_service() -> None:
             recorte = rewrite_master(master_path, header_line, invalid_lines, incomplete_lines)
             if recorte > 0:
                 print(f"[RECORTE] Se recortaron ~{recorte} bytes del Master (tam orig {original_size})")
+
+            elapsed_ms = int((time.time() - cycle_start) * 1000)
+            print(f"[CICLO] Tiempo distribución+recorte: {elapsed_ms} ms")
 
         except Exception as exc:
             # Cualquier error no debe detener el servicio

@@ -151,6 +151,7 @@ Distribuidor.py deja trazabilidad operativa de:
 * número de eventos distribuidos
 * número de líneas inválidas y motivo general
 * ejecución de recortes (cuánto se recorta)
+* tiempo empleado en el ciclo de distribución + recorte (ms)
 * errores durante reparto (sin detener el servicio)
 
 ---
