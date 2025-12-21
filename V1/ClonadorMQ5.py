@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Clonador de Órdenes para MetaTrader 5
-Lee TradeEvents.txt desde Common\Files y clona operaciones OPEN/CLOSE/MODIFY
+Lee TradeEvents.txt desde Common\\Files y clona operaciones OPEN/CLOSE/MODIFY
 Equivalente funcional a ClonadorOrdenes.mq5 pero ejecutándose como script Python
 """
 
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 import MetaTrader5 as mt5
 
 # ========= CONFIG (equivalentes a Inputs) =========
-CSV_NAME = "TradeEvents.txt"     # en Common\Files
+CSV_NAME = "TradeEvents.txt"     # en Common\\Files
 CSV_HISTORICO = "TradeEvents_historico.txt"  # Archivo TXT histórico de ejecuciones exitosas
 NOTIFICATION_FILE = "NotificationQueue.txt"  # Archivo de cola para notificaciones push (leído por EnviarNotificacion.mq5)
 TIMER_SECONDS = 1
@@ -125,7 +125,7 @@ def send_push_notification(message: str) -> bool:
     
     La API de Python de MetaTrader5 NO incluye send_notification(). La función SendNotification()
     solo existe en MQL5. Por lo tanto:
-    - Python escribe el mensaje en NotificationQueue.txt (Common\Files)
+    - Python escribe el mensaje en NotificationQueue.txt (Common\\Files)
     - El script MQL5 EnviarNotificacion.mq5 debe estar ejecutándose para leer el archivo
     - El script MQL5 llama a SendNotification() y limpia el archivo
     
@@ -143,7 +143,7 @@ def send_push_notification(message: str) -> bool:
         if len(message) > 255:
             message = message[:252] + "..."
         
-        # Obtener ruta del archivo de notificaciones en Common\Files
+        # Obtener ruta del archivo de notificaciones en Common\\Files
         notification_path = common_files_csv_path(NOTIFICATION_FILE)
         
         # Escribir el mensaje en el archivo (el script MQL5 lo leerá y enviará)
@@ -529,7 +529,7 @@ def read_events_from_csv(path: str) -> tuple[list[Ev], list[str], str]:
     return events, lines, header_line
 
 def common_files_csv_path(csv_name: str) -> str:
-    """Obtiene la ruta del archivo CSV en Common\Files, verificando conexión primero"""
+    """Obtiene la ruta del archivo CSV en Common\\Files, verificando conexión primero"""
     ensure_mt5_connection()
     ti = mt5.terminal_info()
     if ti is None:
