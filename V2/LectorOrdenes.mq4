@@ -14,8 +14,8 @@
 //+------------------------------------------------------------------+
 #property strict
 
-// Nombre del fichero TXT (en carpeta COMMON\Files)
-input string InpCSVFileName = "Master.txt";
+// Nombre del fichero TXT (subcarpeta COMMON\Files\V2\Phoenix)
+input string InpCSVFileName = "V2\\Phoenix\\Master.txt";
 // Timer en segundos para revisar cambios
 input int    InpTimerSeconds = 1;  // Revisar cada 1 segundo (alineado con clonadores)
 

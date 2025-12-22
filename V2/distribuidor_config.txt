@@ -2,8 +2,8 @@
 # Líneas vacías o que empiezan por # se ignoran
 # Formato: clave=valor
 
-# Ruta a Common\Files (dejar vacío para usar ruta por defecto de MetaTrader)
-common_files_dir=
+# Ruta a Common\Files (usar subcarpeta V2\Phoenix)
+common_files_dir=C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\V2\Phoenix
 
 # Nombre del fichero maestro
 master_filename=Master.txt
