@@ -467,7 +467,8 @@ void OnTimer()
             if(symDigits<=0) symDigits=Digits;
             string ok = "Ticket: " + ev.ticket + " - MODIFY EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(OrderLots(),2) + " lots SL=" + DoubleToString(newSL,symDigits) + " TP=" + DoubleToString(newTP,symDigits);
             Notify(ok);
-            AppendHistory("MODIFY OK", ev, 0, 0, 0, 0, 0);
+         string resHist = "MODIFY OK SL=" + DoubleToString(newSL,symDigits) + " TP=" + DoubleToString(newTP,symDigits);
+         AppendHistory(resHist, ev, 0, 0, 0, 0, 0);
             RemoveTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
          }
          else
@@ -479,6 +480,10 @@ void OnTimer()
                AddTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
             }
             // mantener para reintento
+         int symDigits2 = (int)MarketInfo(ev.symbol, MODE_DIGITS);
+         if(symDigits2<=0) symDigits2=Digits;
+         string resFail = "ERROR: MODIFY SL=" + DoubleToString(newSL,symDigits2) + " TP=" + DoubleToString(newTP,symDigits2);
+         AppendHistory(resFail, ev, 0, 0, 0, 0, 0);
             ArrayResize(remaining, remainingCount+1);
             remaining[remainingCount]=ev.originalLine;
             remainingCount++;
