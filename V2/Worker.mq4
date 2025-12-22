@@ -73,15 +73,14 @@ void RemoveTicket(string ticket, string &arr[], int &count)
 //+------------------------------------------------------------------+
 //| Helpers de strings                                               |
 //+------------------------------------------------------------------+
-string Trim(const string s)
+string Trim(string s)
 {
-   string t = s;
-   StringTrimLeft(t);
-   StringTrimRight(t);
-   return(t);
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   return(s);
 }
 
-string Upper(const string s)
+string Upper(string s)
 {
    return(StringToUpper(s));
 }
@@ -284,13 +283,26 @@ bool ParseLine(const string line, EventRec &ev)
    int n = StringSplit(line, ';', parts);
    if(n<5)
       return(false);
-   ev.eventType = Upper(Trim(parts[0]));
-   ev.ticket    = Trim(parts[1]);
-   ev.orderType = Upper(Trim(parts[2]));
-   ev.lots      = StrToDouble(StringReplace(Trim(parts[3]), ",", "."));
-   ev.symbol    = NormalizeSymbol(Trim(parts[4]));
-   ev.sl        = (n>5 ? StrToDouble(StringReplace(Trim(parts[5]), ",", ".")) : 0.0);
-   ev.tp        = (n>6 ? StrToDouble(StringReplace(Trim(parts[6]), ",", ".")) : 0.0);
+   string tmp;
+
+   tmp = Trim(parts[0]); ev.eventType = Upper(tmp);
+   ev.ticket = Trim(parts[1]);
+   tmp = Trim(parts[2]); ev.orderType = Upper(tmp);
+
+   tmp = Trim(parts[3]); StringReplace(tmp, ",", "."); ev.lots = StrToDouble(tmp);
+   tmp = Trim(parts[4]); ev.symbol = NormalizeSymbol(tmp);
+
+   if(n>5)
+   {
+      tmp = Trim(parts[5]); StringReplace(tmp, ",", "."); ev.sl = StrToDouble(tmp);
+   }
+   else ev.sl = 0.0;
+
+   if(n>6)
+   {
+      tmp = Trim(parts[6]); StringReplace(tmp, ",", "."); ev.tp = StrToDouble(tmp);
+   }
+   else ev.tp = 0.0;
    ev.originalLine = line;
    if(ev.eventType=="" || ev.ticket=="" || ev.symbol=="")
       return(false);
