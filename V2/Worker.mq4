@@ -112,12 +112,29 @@ void Notify(string msg)
 bool EnsureBaseFolder()
 {
    string common = TerminalInfoString(TERMINAL_COMMONDATA_PATH) + "\\Files";
-   string path = common + "\\" + BASE_SUBDIR;
-   // FolderCreate crea intermedios si faltan
-   if(!FolderCreate(path))
+   string dirV2 = common + "\\V2";
+   string dirPhoenix = common + "\\V2\\Phoenix";
+
+   // Crear Files (ya debería existir), V2 y luego Phoenix
+   if(!FolderCreate(dirV2))
    {
-      Print("No se pudo crear carpeta base: ", path, " err=", GetLastError());
-      return(false);
+      int err = GetLastError();
+      if(err!=5004 && err!=5019) // 5004 not exist? 5019 already exists
+      {
+         Print("No se pudo crear carpeta V2: ", dirV2, " err=", err);
+         return(false);
+      }
+      ResetLastError();
+   }
+   if(!FolderCreate(dirPhoenix))
+   {
+      int err2 = GetLastError();
+      if(err2!=5004 && err2!=5019)
+      {
+         Print("No se pudo crear carpeta base: ", dirPhoenix, " err=", err2);
+         return(false);
+      }
+      ResetLastError();
    }
    return(true);
 }
