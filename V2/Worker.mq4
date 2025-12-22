@@ -82,7 +82,8 @@ string Trim(string s)
 
 string Upper(string s)
 {
-   return(StringToUpper(s));
+   StringToUpper(s);
+   return(s);
 }
 
 //+------------------------------------------------------------------+
@@ -348,7 +349,8 @@ void OnTimer()
    int startIdx=0;
    if(total>0)
    {
-      string firstLower = StringToLower(lines[0]);
+      string firstLower = lines[0];
+      StringToLower(firstLower);
       if(StringFind(firstLower, "event_type")>=0)
          startIdx=1;
    }

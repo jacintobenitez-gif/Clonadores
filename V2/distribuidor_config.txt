@@ -9,12 +9,9 @@ common_files_dir=C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Comm
 master_filename=Master.txt
 
 # Lista de workers (una línea por worker)
-worker_id=01
-worker_id=02
-worker_id=03
-worker_id=04
-worker_id=05
-worker_id=06
+worker_id=87046166
+worker_id=511029358
+
 
 # Intervalo de sondeo en segundos
 poll_seconds=1.0
