@@ -19,7 +19,7 @@ Entradas / Parámetros (Inputs)
 Archivos y rutas
 ----------------
 - Carpeta base: `C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\V2\Phoenix`
-  - Crear si no existe al iniciar.
+  - Se asume que ya existe; el EA no crea carpetas.
 - `worker_id`: `AccountNumber()`.
 - Entrada: `cola_WORKER_<worker_id>.txt`.
 - Histórico: `historico_WORKER_<worker_id>.txt` (UTF-8).
@@ -33,7 +33,7 @@ Archivos y rutas
   `timestamp_ejecucion;resultado;event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit`
   - OPEN: rellenar `open_price`, `open_time`; `close_*` y `profit` vacíos.
   - CLOSE: rellenar `close_price`, `close_time`, `profit`; `open_*` vacíos.
-  - MODIFY: rellenar `sl`/`tp` nuevos; precios/tiempos pueden quedar vacíos si no aplican.
+  - MODIFY: rellenar `sl`/`tp` nuevos; precios/tiempos pueden quedar vacíos si no aplican. En el histórico se detalla `SL=` y `TP=` en el resultado.
 
 Gestión de símbolos (alias)
 ---------------------------
@@ -80,12 +80,12 @@ Bucle principal (OnTimer)
        - `OrderClose` con `Slippage`, `MagicNumber`.
        - Si éxito: histórico `resultado=CLOSE OK`, `close_price`, `close_time`, `profit=OrderProfit()`.
        - Si fallo: histórico `resultado=ERROR: ...`, mantener línea para reintento.
-   - MODIFY:
+  - MODIFY:
      - Buscar posición abierta (mismo criterio, símbolo normalizado).
      - Si no existe: histórico `resultado=No existe operacion abierta`; eliminar línea.
      - Si existe: `OrderModify` con nuevos `sl`/`tp` (0 si no vienen).
-       - Si éxito: histórico `resultado=MODIFY OK` (sl/tp nuevos).
-       - Si fallo: histórico `resultado=ERROR: ...`, mantener línea para reintento.
+       - Si éxito: histórico `resultado=MODIFY OK SL=<...> TP=<...>` (sl/tp nuevos).
+       - Si fallo: histórico `resultado=ERROR: MODIFY SL=<...> TP=<...>`, mantener línea para reintento.
 5) Reescritura de la cola:
    - Reescribir el archivo de entrada solo con las líneas que FALLARON **en CLOSE/MODIFY**.
    - Eliminar de la cola:
