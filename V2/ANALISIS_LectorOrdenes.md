@@ -181,14 +181,14 @@ MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00
 
 **Cabecera** (primera línea):
 ```
-event_type;ticket;order_type;lots;symbol;sl;tp
+event_type;ticket;order_type;lots;symbol;sl;tp;contract_size
 ```
 
 **Líneas de eventos**:
 ```
-OPEN;39924291;BUY;0.04;XAUUSD;4288.04;4290.00
-CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800
-MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00
+OPEN;39924291;BUY;0.04;XAUUSD;4288.04;4290.00;100.00
+CLOSE;39924292;SELL;0.02;EURUSD;1.0850;1.0800;100000.00
+MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00;100.00
 ```
 
 **Campos**:
@@ -199,6 +199,7 @@ MODIFY;39924291;BUY;0.04;XAUUSD;4290.00;4295.00
 - `symbol`: Símbolo del instrumento (ej: XAUUSD, EURUSD)
 - `sl`: Stop Loss (vacío si no tiene)
 - `tp`: Take Profit (vacío si no tiene)
+- `contract_size`: Tamaño de contrato del símbolo en el origen (para que el Worker escale el lote destino)
 
 **Delimitador**: Punto y coma (`;`)  
 **Codificación**: UTF-8 (sin BOM)  
@@ -1068,6 +1069,10 @@ if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
 - Modifica `OnTimer()` para procesar primero tickets pendientes antes de detectar nuevos cierres
 - Modifica actualización de estado previo para mantener tickets pendientes en `g_prevTickets[]`
 - **Ventaja**: Garantiza que ningún evento CLOSE se pierda, incluso cuando múltiples operaciones se cierran simultáneamente o cuando hay delays en la actualización del historial de MT4
+
+### v1.8
+- Añade campo `contract_size` en cabecera y eventos (OPEN/MODIFY/CLOSE), obtenido de `MarketInfo(symbol, MODE_TRADECONTRACTSIZE)`.
+- Facilita que los Workers escalen el lote destino usando el tamaño de contrato del origen.
 
 ---
 

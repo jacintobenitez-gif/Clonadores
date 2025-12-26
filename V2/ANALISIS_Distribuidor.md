@@ -24,9 +24,9 @@ El origen es un fichero único:
 * **Estructura**: cada evento está representado por **una línea**
 * **Regla de “commit”**: una línea es un evento válido **solo si termina con salto de línea (`\n`)**
 * **Cabecera**: puede existir una primera línea que actúa como cabecera y **no se debe procesar**
-* **Campos por evento**: exactamente **7 campos**, separados por `;`, en el siguiente orden:
+* **Campos por evento**: **7 u 8 campos**, separados por `;`, en el siguiente orden:
 
-`event_type;ticket;order_type;lots;symbol;sl;tp`
+`event_type;ticket;order_type;lots;symbol;sl;tp[;contract_size]`
 
 ---
 
@@ -87,8 +87,8 @@ Un evento se considera **válido** si cumple:
 
 1. Es una línea completa (termina en `\n`)
 2. No es la cabecera
-3. Contiene **exactamente 7 campos** separados por `;`
-4. Los 7 campos se interpretan en el orden definido:
+3. Contiene **7 u 8 campos** separados por `;`
+4. Los campos se interpretan en el orden definido:
 
    * `event_type`
    * `ticket`
@@ -97,6 +97,7 @@ Un evento se considera **válido** si cumple:
    * `symbol`
    * `sl`
    * `tp`
+   * `contract_size` (opcional; si existe, es el tamaño de contrato del origen)
 
 ### 5.1 Eventos inválidos
 

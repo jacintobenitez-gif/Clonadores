@@ -16,19 +16,20 @@ Entradas / Parámetros (Inputs)
 - `MagicNumber` (int, recomendado configurable; 0 si no se define otro).
 - `TimerSeconds` (int, recomendado 1s).
 
-Archivos y rutas
-----------------
+- Archivos y rutas
+-----------------
 - Carpeta base: `C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\V2\Phoenix`
   - Se asume que ya existe; el EA no crea carpetas.
 - `worker_id`: `AccountNumber()`.
 - Entrada: `cola_WORKER_<worker_id>.txt`.
 - Histórico: `historico_WORKER_<worker_id>.txt` (UTF-8).
-- Formato de línea (entrada): `event_type;ticket;order_type;lots;symbol;sl;tp`
+- Formato de línea (entrada): `event_type;ticket;order_type;lots;symbol;sl;tp;contract_size`
   - `event_type`: OPEN | CLOSE | MODIFY (case-insensitive).
   - `order_type`: BUY | SELL.
   - `lots`: lote origen (double).
   - `symbol`: string.
   - `sl`/`tp`: pueden venir vacíos -> tratar como 0.
+  - `contract_size`: tamaño de contrato en el origen (double). Si no viene, se asume 0 y no se escala.
 - Formato de histórico (salida), una línea por intento:
   `timestamp_ejecucion;resultado;event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit`
   - OPEN: rellenar `open_price`, `open_time`; `close_*` y `profit` vacíos.
@@ -62,9 +63,13 @@ Bucle principal (OnTimer)
 4) Para cada evento:
    - Normalizar `event_type` (OPEN/CLOSE/MODIFY) y `order_type` (BUY/SELL).
    - Normalizar `symbol` con `NormalizeSymbol` (p. ej. `XAUUSD-STD` → `XAUUSD`) y usar el normalizado en todo el flujo.
-   - Calcular `lots_worker`:
-     - Si `Fondeo=true`: `lots_worker = lots * LotMultiplier`.
-     - Si `Fondeo=false`: `lots_worker = FixedLots` ajustado a `MODE_MINLOT`, `MODE_MAXLOT`, `MODE_LOTSTEP`.
+- Calcular `lots_worker` (con escalado por contract size):
+     - `cs_dest = MarketInfo(symbol, MODE_TRADECONTRACTSIZE)` (si ≤0 usar 1.0).
+     - Si la línea trae `contract_size` (>0), `ratio = cs_origin / cs_dest`, si no, ratio=1.
+     - Base lote:
+         - Si `Fondeo=true`: `base = lots * LotMultiplier`.
+         - Si `Fondeo=false`: `base = FixedLots`.
+     - `lots_worker = AdjustFixedLots(symbol, base * ratio)` respetando min/max/step del destino.
    - `comment` = ticket maestro (string).
    - OPEN:
      - Asegurar símbolo en MarketWatch (`SymbolSelect(symbol_normalizado, true)`).
