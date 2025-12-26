@@ -88,6 +88,18 @@ bool DoubleChanged(double val1, double val2)
 }
 
 //+------------------------------------------------------------------+
+//| Obtiene contract size usando tickvalue/ticksize (compatibilidad) |
+//+------------------------------------------------------------------+
+double GetContractSize(string symbol)
+{
+   double tickValue = MarketInfo(symbol, MODE_TICKVALUE);
+   double tickSize  = MarketInfo(symbol, MODE_TICKSIZE);
+   if(tickValue <= 0.0 || tickSize <= 0.0)
+      return(1.0);
+   return(tickValue / tickSize);
+}
+
+//+------------------------------------------------------------------+
 //| Convierte string Unicode (MQL4) a bytes UTF-8                     |
 //+------------------------------------------------------------------+
 void StringToUTF8Bytes(string str, uchar &bytes[])
@@ -177,8 +189,7 @@ void AppendEventToCSV(string eventType,
    // Escribir bytes UTF-8
    FileWriteArray(handle, utf8Bytes);
    
-   // Escribir salto de lÃ­nea UTF-8 (
- = 0x0A)
+   // Escribir salto de lÃ­nea UTF-8 (\n = 0x0A)
    uchar newline[] = {0x0A};
    FileWriteArray(handle, newline);
 
@@ -213,7 +224,7 @@ bool TryWriteCloseEvent(int ticket)
                        OrderSymbol(),
                        OrderStopLoss(),
                        OrderTakeProfit(),
-                       MarketInfo(OrderSymbol(), MODE_TRADECONTRACTSIZE));
+                       GetContractSize(OrderSymbol()));
       return(true);  // Éxito
    }
    return(false);  // Falló: ticket no encontrado en historial
@@ -397,7 +408,7 @@ void OnTimer()
                              OrderSymbol(),
                              OrderStopLoss(),
                              OrderTakeProfit(),
-                             MarketInfo(OrderSymbol(), MODE_TRADECONTRACTSIZE));
+                             GetContractSize(OrderSymbol()));
 
             // Guardar estado inicial (SL/TP)
             g_prevTickets[k] = t;
@@ -446,7 +457,7 @@ void OnTimer()
                              OrderSymbol(),
                              OrderStopLoss(),
                              OrderTakeProfit(),
-                             MarketInfo(OrderSymbol(), MODE_TRADECONTRACTSIZE));
+                             GetContractSize(OrderSymbol()));
             
             // Nota: El estado previo se guardará en la sección 4 al final
          }
@@ -497,7 +508,7 @@ void OnTimer()
                                    OrderSymbol(),
                                    currentSL,  // Nuevo SL
                                    currentTP,   // Nuevo TP
-                                   MarketInfo(OrderSymbol(), MODE_TRADECONTRACTSIZE));
+                                   GetContractSize(OrderSymbol()));
                   
                   // Actualizar estado previo inmediatamente
                   g_prevOrders[prevIdx].sl = currentSL;

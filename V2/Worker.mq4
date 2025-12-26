@@ -99,6 +99,18 @@ string NormalizeSymbol(string sym)
 }
 
 //+------------------------------------------------------------------+
+//| Obtiene contract size usando tickvalue/ticksize (compatibilidad) |
+//+------------------------------------------------------------------+
+double GetContractSize(string symbol)
+{
+   double tickValue = MarketInfo(symbol, MODE_TICKVALUE);
+   double tickSize  = MarketInfo(symbol, MODE_TICKSIZE);
+   if(tickValue <= 0.0 || tickSize <= 0.0)
+      return(1.0);
+   return(tickValue / tickSize);
+}
+
+//+------------------------------------------------------------------+
 //| Descripción de error (fallback si build no trae ErrorDescription)|
 //+------------------------------------------------------------------+
 string ErrorText(const int code)
@@ -197,7 +209,7 @@ double AdjustFixedLots(string symbol, double lot)
 //+------------------------------------------------------------------+
 double ComputeWorkerLots(string symbol, double masterLots, double csOrigin)
 {
-   double csDest = MarketInfo(symbol, MODE_TRADECONTRACTSIZE);
+   double csDest = GetContractSize(symbol);
    if(csDest<=0.0) csDest = 1.0;
    double ratio = 1.0;
    if(csOrigin > 0.0)
