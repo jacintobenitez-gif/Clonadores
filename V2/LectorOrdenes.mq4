@@ -212,10 +212,10 @@ void AppendEventToCSV(string eventType,
    StringToUTF8Bytes(line, utf8Bytes);
 
    // Escribir bytes UTF-8
+   // Escribir bytes UTF-8
    FileWriteArray(handle, utf8Bytes);
    
-   // Escribir salto de lÃ­nea UTF-8 (
- = 0x0A)
+   // Escribir salto de lÃ­nea UTF-8 (\n = 0x0A)
    uchar newline[] = {0x0A};
    FileWriteArray(handle, newline);
 
