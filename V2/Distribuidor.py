@@ -247,9 +247,7 @@ def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[
     Escribe cada lÃ­nea vÃ¡lida en todas las colas de workers y devuelve status por worker.
     """
     queues_dir.mkdir(parents=True, exist_ok=True)
-    lines_to_write = [ln if ln.endswith("
-") else ln + "
-" for ln in valid_lines]
+    lines_to_write = [ln if ln.endswith("\n") else ln + "\n" for ln in valid_lines]
     tickets = []
     for ln in lines_to_write:
         parts = ln.strip().split(";")
@@ -288,17 +286,14 @@ def append_hist_master(valid_lines: List[str], worker_ids: List[str], status: di
     clonacion_time = datetime.now().strftime("%Y.%m.%d %H:%M:%S.%f")[:-3]
     lines_out: List[str] = []
     for ln in valid_lines:
-        base = ln.rstrip("
-")
-        lines_out.append(base + ";" + clonacion_time + "
-")
+        base = ln.rstrip("\n")
+        lines_out.append(base + ";" + clonacion_time + "\n")
         parts = base.split(";")
         ticket = parts[1] if len(parts) > 1 else ""
         for wid in worker_ids:
             ok = status.get(wid, True)
             result = "OK" if ok else "NOK"
-            lines_out.append(f"{ticket};{wid};{result};{clonacion_time}
-")
+            lines_out.append(f"{ticket};{wid};{result};{clonacion_time}\n")
     with open(hist_path, "a", encoding="utf-8", newline="") as fh:
         fh.writelines(lines_out)
 
