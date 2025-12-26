@@ -40,6 +40,16 @@ int  g_pendingCloseTickets[MAX_ORDERS];  // Tickets pendientes de escribir CLOSE
 int  g_pendingCloseCount = 0;            // Cuántos tickets pendientes hay
 
 //+------------------------------------------------------------------+
+//| Asegura que existan las carpetas V2 y V2\Phoenix en COMMON\Files |
+//+------------------------------------------------------------------+
+void EnsureCommonFolders()
+{
+   // Crea la carpeta base V2 (si no existe) y la subcarpeta Phoenix
+   FolderCreate("V2", FILE_COMMON);
+   FolderCreate("V2\\Phoenix", FILE_COMMON);
+}
+
+//+------------------------------------------------------------------+
 //| Devuelve true si el ticket está en el array (size elementos)     |
 //+------------------------------------------------------------------+
 bool TicketInArray(int ticket, int &arr[], int size)
@@ -253,6 +263,9 @@ void RemovePendingClose(int ticket)
 //+------------------------------------------------------------------+
 void InitCSVIfNeeded()
 {
+   // Asegurar que existen las carpetas destino en Common\Files
+   EnsureCommonFolders();
+
    // Intentar abrir en lectura en carpeta COMMON
    int hRead = FileOpen(InpCSVFileName,
                         FILE_BIN | FILE_READ |
@@ -293,6 +306,7 @@ void InitCSVIfNeeded()
 int OnInit()
 {
    Print("Observador_Common v1.7 inicializado. TXT(COMMON) = ", InpCSVFileName);
+   Print("COMMON path = ", TerminalInfoString(TERMINAL_COMMONDATA_PATH), "\\Files\\", InpCSVFileName);
    Print("Timer: ", InpTimerSeconds, " segundos");
 
    g_prevCount   = 0;
