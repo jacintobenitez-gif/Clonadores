@@ -405,7 +405,9 @@ void OnTimer()
       // Asegurar símbolo
       if(!SymbolSelect(ev.symbol, true))
       {
-         string msg = "Ticket: " + ev.ticket + " - " + ev.eventType + " FALLO: SymbolSelect";
+         int errCodeSym = GetLastError();
+         string errDescSym = ErrorText(errCodeSym);
+         string msg = "Ticket: " + ev.ticket + " - " + ev.eventType + " FALLO: SymbolSelect (" + IntegerToString(errCodeSym) + ") " + errDescSym;
          Notify(msg);
          if(ev.eventType!="OPEN")
          {
