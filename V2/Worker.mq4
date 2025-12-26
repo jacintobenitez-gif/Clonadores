@@ -105,9 +105,17 @@ double GetContractSize(string symbol)
 {
    double tickValue = MarketInfo(symbol, MODE_TICKVALUE);
    double tickSize  = MarketInfo(symbol, MODE_TICKSIZE);
+   Print("[DEBUG] GetContractSize: symbol=", symbol, " tickValue=", tickValue, " tickSize=", tickSize);
+   
    if(tickValue <= 0.0 || tickSize <= 0.0)
+   {
+      Print("[DEBUG] GetContractSize: tickValue o tickSize <= 0, retornando 1.0");
       return(1.0);
-   return(tickValue / tickSize);
+   }
+   
+   double contractSize = tickValue / tickSize;
+   Print("[DEBUG] GetContractSize: contractSize = tickValue(", tickValue, ") / tickSize(", tickSize, ") = ", contractSize);
+   return(contractSize);
 }
 
 //+------------------------------------------------------------------+
@@ -179,7 +187,8 @@ string CommonRelative(const string filename)
 }
 
 //+------------------------------------------------------------------+
-//| Ajusta lote fijo a min/max/step                                  |
+//| Ajusta lote fijo a min/max/step del símbolo destino             |
+//| SIEMPRE se aplica para proteger las cuentas                     |
 //+------------------------------------------------------------------+
 double AdjustFixedLots(string symbol, double lot)
 {
@@ -187,11 +196,30 @@ double AdjustFixedLots(string symbol, double lot)
    double maxLot  = MarketInfo(symbol, MODE_MAXLOT);
    double step    = MarketInfo(symbol, MODE_LOTSTEP);
    if(step<=0) step = minLot;
+   
+   Print("[DEBUG] AdjustFixedLots: symbol=", symbol, " lot entrada=", lot, " MINLOT=", minLot, " MAXLOT=", maxLot, " LOTSTEP=", step);
+   
    double lots = lot;
-   // floor al step
+   // Ajustar al step (floor)
+   double lotsBeforeStep = lots;
    lots = MathFloor(lots/step)*step;
-   if(lots<minLot) lots=minLot;
-   if(lots>maxLot) lots=maxLot;
+   if(lots != lotsBeforeStep)
+      Print("[DEBUG] AdjustFixedLots: Ajustado al step: ", lotsBeforeStep, " -> ", lots);
+   
+   // Limitar a mínimo
+   if(lots<minLot)
+   {
+      Print("[WARN] AdjustFixedLots: Lote ", lots, " < MINLOT ", minLot, ", ajustando a MINLOT");
+      lots=minLot;
+   }
+   
+   // Limitar a máximo
+   if(lots>maxLot)
+   {
+      Print("[WARN] AdjustFixedLots: Lote ", lots, " > MAXLOT ", maxLot, ", ajustando a MAXLOT");
+      lots=maxLot;
+   }
+   
    // Normalizar decimales según step
    int digits=2;
    double tmp=step;
@@ -201,7 +229,10 @@ double AdjustFixedLots(string symbol, double lot)
       tmp*=10.0; d++;
    }
    digits = MathMax(2,d);
-   return(NormalizeDouble(lots,digits));
+   double finalLots = NormalizeDouble(lots,digits);
+   
+   Print("[DEBUG] AdjustFixedLots: Lote final ajustado = ", finalLots);
+   return(finalLots);
 }
 
 //+------------------------------------------------------------------+
@@ -209,15 +240,44 @@ double AdjustFixedLots(string symbol, double lot)
 //+------------------------------------------------------------------+
 double ComputeWorkerLots(string symbol, double masterLots, double csOrigin)
 {
+   Print("[DEBUG] ComputeWorkerLots: symbol=", symbol, " masterLots=", masterLots, " csOrigin=", csOrigin);
+   Print("[DEBUG] ComputeWorkerLots: InpFondeo=", InpFondeo, " InpLotMultiplier=", InpLotMultiplier);
+   
+   // 1. Calcular contract_size del destino
    double csDest = GetContractSize(symbol);
-   if(csDest<=0.0) csDest = 1.0;
-   double ratio = 1.0;
-   if(csOrigin > 0.0)
-      ratio = csOrigin / csDest;
-
-   double baseLots = (InpFondeo ? masterLots*InpLotMultiplier : InpFixedLots);
-   double scaled   = baseLots * ratio;
-   return(AdjustFixedLots(symbol, scaled));
+   Print("[DEBUG] ComputeWorkerLots: csDest calculado=", csDest);
+   if(csDest<=0.0) 
+   {
+      csDest = 1.0;
+      Print("[DEBUG] ComputeWorkerLots: csDest <= 0, ajustado a 1.0");
+   }
+   
+   // 2. Calcular ratio de normalización (csOrigin siempre existe)
+   double ratio = csOrigin / csDest;
+   Print("[DEBUG] ComputeWorkerLots: ratio = csOrigin(", csOrigin, ") / csDest(", csDest, ") = ", ratio);
+   
+   // 3. Normalizar lotes del master
+   double normalizedLots = masterLots * ratio;
+   Print("[DEBUG] ComputeWorkerLots: normalizedLots = masterLots(", masterLots, ") * ratio(", ratio, ") = ", normalizedLots);
+   
+   // 4. Aplicar multiplicador SOLO si es cuenta de fondeo
+   double finalLots;
+   if(InpFondeo)
+   {
+      finalLots = normalizedLots * InpLotMultiplier;
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=true, finalLots = normalizedLots(", normalizedLots, ") * InpLotMultiplier(", InpLotMultiplier, ") = ", finalLots);
+   }
+   else
+   {
+      finalLots = normalizedLots;
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots = normalizedLots(", normalizedLots, ") sin multiplicador");
+   }
+   
+   // 5. Ajustar a min/max/step del símbolo
+   double adjustedLots = AdjustFixedLots(symbol, finalLots);
+   Print("[DEBUG] ComputeWorkerLots: adjustedLots después de AdjustFixedLots = ", adjustedLots);
+   
+   return(adjustedLots);
 }
 
 //+------------------------------------------------------------------+
@@ -334,10 +394,15 @@ int FindOpenOrder(const string symbol, const string ticket)
 //+------------------------------------------------------------------+
 bool ParseLine(const string line, EventRec &ev)
 {
+   Print("[DEBUG] ParseLine: Parseando línea: ", line);
    string parts[];
    int n = StringSplit(line, ';', parts);
+   Print("[DEBUG] ParseLine: StringSplit retornó ", n, " partes");
    if(n<5)
+   {
+      Print("[ERROR] ParseLine: Línea tiene menos de 5 campos (", n, "), descartando");
       return(false);
+   }
    string tmp;
 
    tmp = Trim(parts[0]); ev.eventType = Upper(tmp);
@@ -361,11 +426,23 @@ bool ParseLine(const string line, EventRec &ev)
    if(n>7)
    {
       tmp = Trim(parts[7]); StringReplace(tmp, ",", "."); ev.csOrigin = StrToDouble(tmp);
+      Print("[DEBUG] ParseLine: csOrigin leído de parts[7]='", parts[7], "' -> tmp='", tmp, "' -> csOrigin=", ev.csOrigin);
    }
-   else ev.csOrigin = 0.0;
+   else 
+   {
+      ev.csOrigin = 0.0;
+      Print("[DEBUG] ParseLine: No hay campo 7, csOrigin=0.0");
+   }
    ev.originalLine = line;
+   
+   Print("[DEBUG] ParseLine: eventType=", ev.eventType, " ticket=", ev.ticket, " symbol=", ev.symbol, " lots=", ev.lots, " csOrigin=", ev.csOrigin);
+   
    if(ev.eventType=="" || ev.ticket=="" || ev.symbol=="")
+   {
+      Print("[ERROR] ParseLine: Campos requeridos vacíos. eventType='", ev.eventType, "' ticket='", ev.ticket, "' symbol='", ev.symbol, "'");
       return(false);
+   }
+   Print("[DEBUG] ParseLine: Parseo exitoso");
    return(true);
 }
 
@@ -445,7 +522,9 @@ void OnTimer()
       }
 
       // Calcular lotaje (tras asegurar símbolo)
+      Print("[DEBUG] OnTimer: Llamando ComputeWorkerLots con symbol=", ev.symbol, " ev.lots=", ev.lots, " ev.csOrigin=", ev.csOrigin);
       double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots, ev.csOrigin);
+      Print("[DEBUG] OnTimer: lotsWorker calculado = ", lotsWorker);
 
       if(ev.eventType=="OPEN")
       {
