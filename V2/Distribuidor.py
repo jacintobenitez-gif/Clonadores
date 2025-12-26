@@ -306,17 +306,14 @@ def rewrite_master(
 ) -> int:
     """
     Reescribe Master.txt conservando:
-    - cabecera (si existÃ­a)
-    - lÃ­neas invÃ¡lidas
-    - lÃ­neas incompletas (sin 
-)
+    - cabecera (si existía)
+    - líneas inválidas
+    - líneas incompletas (sin \\n)
     Retorna los bytes recortados (aproximado).
     """
     remaining: List[str] = []
     if header_line:
-        remaining.append(header_line if header_line.endswith("
-") else header_line + "
-")
+        remaining.append(header_line if header_line.endswith("\n") else header_line + "\n")
     remaining.extend(invalid_lines)
     remaining.extend(incomplete_lines)
 
