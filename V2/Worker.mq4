@@ -428,9 +428,14 @@ void OnTimer()
          int ticketNew = OrderSend(ev.symbol, type, lotsWorker, price, InpSlippage, ev.sl, ev.tp, ev.ticket, InpMagicNumber, 0, clrNONE);
          if(ticketNew<0)
          {
-            string err = "Ticket: " + ev.ticket + " - " + FormatLastError("OPEN FALLO");
+            // Capturar el error inmediatamente y registrar código + descripción
+            int errCode = GetLastError();
+            string errDesc = ErrorText(errCode);
+            string errBase = "ERROR: OPEN (" + IntegerToString(errCode) + ") " + errDesc;
+            string err = "Ticket: " + ev.ticket + " - " + errBase;
             Notify(err);
-            AppendHistory(err, ev, 0, 0, 0, 0, 0);
+            // En el histórico dejamos el texto de error base (código + descripción)
+            AppendHistory(errBase, ev, 0, 0, 0, 0, 0);
             // no reintento
          }
          else
