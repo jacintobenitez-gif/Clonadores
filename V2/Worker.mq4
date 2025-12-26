@@ -98,6 +98,48 @@ string NormalizeSymbol(string sym)
 }
 
 //+------------------------------------------------------------------+
+//| Descripción de error (fallback si build no trae ErrorDescription)|
+//+------------------------------------------------------------------+
+string ErrorText(const int code)
+{
+   switch(code)
+   {
+      case 0:   return("No error");
+      case 1:   return("No error returned");
+      case 2:   return("Common error");
+      case 3:   return("Invalid trade parameters");
+      case 4:   return("Trade server busy");
+      case 5:   return("Old terminal version");
+      case 6:   return("No connection with trade server");
+      case 8:   return("Too frequent requests");
+      case 64:  return("Account disabled");
+      case 65:  return("Invalid account");
+      case 128: return("Trade timeout");
+      case 129: return("Invalid price");
+      case 130: return("Invalid stop");
+      case 131: return("Invalid trade volume");
+      case 132: return("Market closed");
+      case 133: return("Trade disabled");
+      case 134: return("Not enough money");
+      case 135: return("Price changed");
+      case 136: return("Off quotes");
+      case 146: return("Trade subsystem busy");
+      case 148: return("Auto trading disabled");
+      default:  return("Error code " + IntegerToString(code));
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Formatea código y descripción de error de MT4                    |
+//+------------------------------------------------------------------+
+string FormatLastError(const string prefix)
+{
+   int code = GetLastError();
+   string desc = ErrorText(code);
+   return(prefix + " (" + IntegerToString(code) + ") " + desc);
+}
+
+//+------------------------------------------------------------------+
 //| Prefijo de notificación                                          |
 //+------------------------------------------------------------------+
 void Notify(string msg)
@@ -386,9 +428,9 @@ void OnTimer()
          int ticketNew = OrderSend(ev.symbol, type, lotsWorker, price, InpSlippage, ev.sl, ev.tp, ev.ticket, InpMagicNumber, 0, clrNONE);
          if(ticketNew<0)
          {
-            string err = "Ticket: " + ev.ticket + " - OPEN FALLO: (" + IntegerToString(GetLastError()) + ")";
+            string err = "Ticket: " + ev.ticket + " - " + FormatLastError("OPEN FALLO");
             Notify(err);
-            AppendHistory("ERROR: OPEN", ev, 0, 0, 0, 0, 0);
+            AppendHistory(err, ev, 0, 0, 0, 0, 0);
             // no reintento
          }
          else
@@ -409,7 +451,7 @@ void OnTimer()
          }
          if(!OrderSelect(orderTicket, SELECT_BY_TICKET))
          {
-            AppendHistory("ERROR: CLOSE select", ev, 0, 0, 0, 0, 0);
+            AppendHistory(FormatLastError("ERROR: CLOSE select"), ev, 0, 0, 0, 0, 0);
             // mantener para reintento
             ArrayResize(remaining, remainingCount+1);
             remaining[remainingCount]=ev.originalLine;
@@ -429,7 +471,7 @@ void OnTimer()
          }
          else
          {
-            string err = "Ticket: " + ev.ticket + " - CLOSE FALLO: (" + IntegerToString(GetLastError()) + ")";
+            string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO");
             if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
             {
                Notify(err);
@@ -452,7 +494,7 @@ void OnTimer()
          }
          if(!OrderSelect(orderTicket, SELECT_BY_TICKET))
          {
-            AppendHistory("ERROR: MODIFY select", ev, 0, 0, 0, 0, 0);
+            AppendHistory(FormatLastError("ERROR: MODIFY select"), ev, 0, 0, 0, 0, 0);
             // mantener
             ArrayResize(remaining, remainingCount+1);
             remaining[remainingCount]=ev.originalLine;
@@ -473,17 +515,22 @@ void OnTimer()
          }
          else
          {
-            string err = "Ticket: " + ev.ticket + " - MODIFY FALLO: (" + IntegerToString(GetLastError()) + ")";
+            // Capturar error antes de otras llamadas para no perder el código
+            int errCode = GetLastError();
+            string errDesc = ErrorText(errCode);
+            string errBase = "MODIFY FALLO (" + IntegerToString(errCode) + ") " + errDesc;
+
+            int symDigits2 = (int)MarketInfo(ev.symbol, MODE_DIGITS);
+            if(symDigits2<=0) symDigits2=Digits;
+            string errDetail = "ERROR: MODIFY SL=" + DoubleToString(newSL,symDigits2) + " TP=" + DoubleToString(newTP,symDigits2);
+            string err = "Ticket: " + ev.ticket + " - " + errBase + " " + errDetail;
             if(!TicketInArray(ev.ticket, g_notifModifyTickets, g_notifModifyCount))
             {
                Notify(err);
                AddTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
             }
             // mantener para reintento
-         int symDigits2 = (int)MarketInfo(ev.symbol, MODE_DIGITS);
-         if(symDigits2<=0) symDigits2=Digits;
-         string resFail = "ERROR: MODIFY SL=" + DoubleToString(newSL,symDigits2) + " TP=" + DoubleToString(newTP,symDigits2);
-         AppendHistory(resFail, ev, 0, 0, 0, 0, 0);
+         AppendHistory(err, ev, 0, 0, 0, 0, 0);
             ArrayResize(remaining, remainingCount+1);
             remaining[remainingCount]=ev.originalLine;
             remainingCount++;

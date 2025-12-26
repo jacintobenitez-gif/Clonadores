@@ -247,10 +247,29 @@ def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[
     queues_dir.mkdir(parents=True, exist_ok=True)
     # Asegurar que cada línea termina en salto de línea para evitar concatenaciones
     lines_to_write = [ln if ln.endswith("\n") else ln + "\n" for ln in valid_lines]
+    # Extraer tickets para mensajes de alerta (best effort)
+    tickets = []
+    for ln in lines_to_write:
+        parts = ln.strip().split(";")
+        if len(parts) > 1:
+            tickets.append(parts[1])
+    tickets_str = ",".join(tickets) if tickets else "desconocido"
+
     for worker_id in worker_ids:
         queue_path = queues_dir / f"cola_WORKER_{worker_id}.txt"
-        with open(queue_path, "a", encoding="utf-8", newline="") as fh:
-            fh.writelines(lines_to_write)
+        try:
+            with open(queue_path, "a", encoding="utf-8", newline="") as fh:
+                fh.writelines(lines_to_write)
+        except Exception as exc:
+            # En caso de fallo, guardar en pendientes del worker y alertar
+            pending_path = queues_dir / f"pendientes_worker_{worker_id}.txt"
+            try:
+                with open(pending_path, "a", encoding="utf-8", newline="") as ph:
+                    ph.writelines(lines_to_write)
+            except Exception as pend_exc:
+                print(f"[ALERTA] worker={worker_id} ticket={tickets_str} fallo al guardar pendientes: {pend_exc}")
+                continue
+            print(f"[ALERTA] worker={worker_id} ticket={tickets_str} fallo al escribir cola: {exc}. Guardado en {pending_path}")
 
 
 def rewrite_master(

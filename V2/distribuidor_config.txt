@@ -9,7 +9,7 @@ common_files_dir=C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Comm
 master_filename=Master.txt
 
 # Lista de workers (una línea por worker)
-worker_id=87046166
+worker_id=71617942
 worker_id=511029358
 
 
