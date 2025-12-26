@@ -100,6 +100,25 @@ double GetContractSize(string symbol)
 }
 
 //+------------------------------------------------------------------+
+//| Timestamp con milisegundos (lector_time)                         |
+//+------------------------------------------------------------------+
+string NowWithMillis()
+{
+   datetime t = TimeCurrent();
+   int ms = (int)(GetTickCount() % 1000);
+   return(StringFormat("%s.%03d", TimeToString(t, TIME_DATE|TIME_SECONDS), ms));
+}
+
+//+------------------------------------------------------------------+
+//| Convierte datetime a string (sin ms)                             |
+//+------------------------------------------------------------------+
+string TimeToStringNoMs(datetime t)
+{
+   if(t<=0) return("");
+   return(TimeToString(t, TIME_DATE|TIME_SECONDS));
+}
+
+//+------------------------------------------------------------------+
 //| Convierte string Unicode (MQL4) a bytes UTF-8                     |
 //+------------------------------------------------------------------+
 void StringToUTF8Bytes(string str, uchar &bytes[])
@@ -150,7 +169,9 @@ void AppendEventToCSV(string eventType,
                       string symbol,
                       double sl,
                       double tp,
-                      double contractSize)
+                      double contractSize,
+                      string lectorTime,
+                      string openTime)
 {
    // Abrir archivo en modo binario para escribir UTF-8
    int handle = FileOpen(InpCSVFileName,
@@ -171,6 +192,8 @@ void AppendEventToCSV(string eventType,
    string sSL   = (sl > 0.0 ? DoubleToString(sl, Digits) : "");
    string sTP   = (tp > 0.0 ? DoubleToString(tp, Digits) : "");
    string sCS   = DoubleToString(contractSize, 2);
+   string sLT   = lectorTime;
+   string sOT   = openTime;
 
    // Construir lÃ­nea manualmente con delimitador ; (solo campos requeridos)
    string line = eventType + ";" +
@@ -180,7 +203,9 @@ void AppendEventToCSV(string eventType,
                  symbol + ";" +
                  sSL + ";" +
                  sTP + ";" +
-                 sCS;
+                 sCS + ";" +
+                 sLT + ";" +
+                 sOT;
 
    // Convertir lÃ­nea a UTF-8 y escribir
    uchar utf8Bytes[];
@@ -189,7 +214,8 @@ void AppendEventToCSV(string eventType,
    // Escribir bytes UTF-8
    FileWriteArray(handle, utf8Bytes);
    
-   // Escribir salto de lÃ­nea UTF-8 (\n = 0x0A)
+   // Escribir salto de lÃ­nea UTF-8 (
+ = 0x0A)
    uchar newline[] = {0x0A};
    FileWriteArray(handle, newline);
 
@@ -217,6 +243,7 @@ bool TryWriteCloseEvent(int ticket)
          default:           tipo = "OTRO";      break;
       }
 
+      string lectorT = NowWithMillis();
       AppendEventToCSV("CLOSE",
                        ticket,
                        tipo,
@@ -224,7 +251,9 @@ bool TryWriteCloseEvent(int ticket)
                        OrderSymbol(),
                        OrderStopLoss(),
                        OrderTakeProfit(),
-                       GetContractSize(OrderSymbol()));
+                       GetContractSize(OrderSymbol()),
+                       lectorT,
+                       "");
       return(true);  // Éxito
    }
    return(false);  // Falló: ticket no encontrado en historial
@@ -304,7 +333,7 @@ void InitCSVIfNeeded()
    }
 
    // Escribir cabecera en UTF-8
-   string header = "event_type;ticket;order_type;lots;symbol;sl;tp;contract_size";
+   string header = "event_type;ticket;order_type;lots;symbol;sl;tp;contract_size;lector_time;open_time";
    uchar utf8Bytes[];
    StringToUTF8Bytes(header, utf8Bytes);
    FileWriteArray(handle, utf8Bytes);
@@ -401,6 +430,8 @@ void OnTimer()
                default:           tipo = "OTRO";      break;
             }
 
+            string lectorT = NowWithMillis();
+            string openT   = TimeToStringNoMs(OrderOpenTime());
             AppendEventToCSV("OPEN",
                              t,
                              tipo,
@@ -408,7 +439,9 @@ void OnTimer()
                              OrderSymbol(),
                              OrderStopLoss(),
                              OrderTakeProfit(),
-                             GetContractSize(OrderSymbol()));
+                             GetContractSize(OrderSymbol()),
+                             lectorT,
+                             openT);
 
             // Guardar estado inicial (SL/TP)
             g_prevTickets[k] = t;
@@ -450,6 +483,8 @@ void OnTimer()
                default:           tipo = "OTRO";      break;
             }
 
+            string lectorT = NowWithMillis();
+            string openT   = TimeToStringNoMs(OrderOpenTime());
             AppendEventToCSV("OPEN",
                              t,
                              tipo,
@@ -457,7 +492,9 @@ void OnTimer()
                              OrderSymbol(),
                              OrderStopLoss(),
                              OrderTakeProfit(),
-                             GetContractSize(OrderSymbol()));
+                             GetContractSize(OrderSymbol()),
+                             lectorT,
+                             openT);
             
             // Nota: El estado previo se guardará en la sección 4 al final
          }
@@ -501,6 +538,7 @@ void OnTimer()
                      default:           tipo = "OTRO";      break;
                   }
                   
+                  string lectorT = NowWithMillis();
                   AppendEventToCSV("MODIFY",
                                    t,
                                    tipo,
@@ -508,7 +546,9 @@ void OnTimer()
                                    OrderSymbol(),
                                    currentSL,  // Nuevo SL
                                    currentTP,   // Nuevo TP
-                                   GetContractSize(OrderSymbol()));
+                                   GetContractSize(OrderSymbol()),
+                                   lectorT,
+                                   "");
                   
                   // Actualizar estado previo inmediatamente
                   g_prevOrders[prevIdx].sl = currentSL;

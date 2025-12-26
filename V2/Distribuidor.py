@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -233,21 +234,22 @@ def validate_lines(complete_lines: List[str]) -> Tuple[List[str], List[str]]:
     invalid: List[str] = []
     for line in complete_lines:
         fields = line.rstrip("\n").split(";")
-        if len(fields) in (7, 8):
+        if 7 <= len(fields) <= 10:
             valid.append(line)
         else:
             invalid.append(line)
     return valid, invalid
 
 
-def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[str]) -> None:
+
+def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[str]) -> dict:
     """
-    Escribe cada línea válida en todas las colas de workers.
+    Escribe cada lÃ­nea vÃ¡lida en todas las colas de workers y devuelve status por worker.
     """
     queues_dir.mkdir(parents=True, exist_ok=True)
-    # Asegurar que cada línea termina en salto de línea para evitar concatenaciones
-    lines_to_write = [ln if ln.endswith("\n") else ln + "\n" for ln in valid_lines]
-    # Extraer tickets para mensajes de alerta (best effort)
+    lines_to_write = [ln if ln.endswith("
+") else ln + "
+" for ln in valid_lines]
     tickets = []
     for ln in lines_to_write:
         parts = ln.strip().split(";")
@@ -255,21 +257,50 @@ def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[
             tickets.append(parts[1])
     tickets_str = ",".join(tickets) if tickets else "desconocido"
 
+    status = {}
     for worker_id in worker_ids:
         queue_path = queues_dir / f"cola_WORKER_{worker_id}.txt"
+        ok = True
         try:
             with open(queue_path, "a", encoding="utf-8", newline="") as fh:
                 fh.writelines(lines_to_write)
         except Exception as exc:
-            # En caso de fallo, guardar en pendientes del worker y alertar
+            ok = False
             pending_path = queues_dir / f"pendientes_worker_{worker_id}.txt"
             try:
                 with open(pending_path, "a", encoding="utf-8", newline="") as ph:
                     ph.writelines(lines_to_write)
             except Exception as pend_exc:
                 print(f"[ALERTA] worker={worker_id} ticket={tickets_str} fallo al guardar pendientes: {pend_exc}")
-                continue
-            print(f"[ALERTA] worker={worker_id} ticket={tickets_str} fallo al escribir cola: {exc}. Guardado en {pending_path}")
+            else:
+                print(f"[ALERTA] worker={worker_id} ticket={tickets_str} fallo al escribir cola: {exc}. Guardado en {pending_path}")
+        status[worker_id] = ok
+    return status
+
+
+def append_hist_master(valid_lines: List[str], worker_ids: List[str], status: dict, hist_path: Path) -> None:
+    """
+    Log de distribuciÃ³n:
+    - lÃ­nea original del Master con clonacion_time aÃ±adido
+    - una lÃ­nea de resultado por worker: ticket;worker;OK|NOK;clonacion_time
+    """
+    hist_path.parent.mkdir(parents=True, exist_ok=True)
+    clonacion_time = datetime.now().strftime("%Y.%m.%d %H:%M:%S.%f")[:-3]
+    lines_out: List[str] = []
+    for ln in valid_lines:
+        base = ln.rstrip("
+")
+        lines_out.append(base + ";" + clonacion_time + "
+")
+        parts = base.split(";")
+        ticket = parts[1] if len(parts) > 1 else ""
+        for wid in worker_ids:
+            ok = status.get(wid, True)
+            result = "OK" if ok else "NOK"
+            lines_out.append(f"{ticket};{wid};{result};{clonacion_time}
+")
+    with open(hist_path, "a", encoding="utf-8", newline="") as fh:
+        fh.writelines(lines_out)
 
 
 def rewrite_master(
@@ -280,15 +311,17 @@ def rewrite_master(
 ) -> int:
     """
     Reescribe Master.txt conservando:
-    - cabecera (si existía)
-    - líneas inválidas
-    - líneas incompletas (sin \n)
+    - cabecera (si existÃ­a)
+    - lÃ­neas invÃ¡lidas
+    - lÃ­neas incompletas (sin 
+)
     Retorna los bytes recortados (aproximado).
     """
     remaining: List[str] = []
     if header_line:
-        # Garantiza que la cabecera termina en salto de línea
-        remaining.append(header_line if header_line.endswith("\n") else header_line + "\n")
+        remaining.append(header_line if header_line.endswith("
+") else header_line + "
+")
     remaining.extend(invalid_lines)
     remaining.extend(incomplete_lines)
 
@@ -311,10 +344,10 @@ def run_service() -> None:
     while True:
         try:
             cycle_start = time.time()
-            # Hot-reload de configuración cada intervalo configurable
             cfg = get_config()
             master_path = cfg.common_dir / cfg.master_filename
-            queues_dir = cfg.common_dir  # mismas Common\Files para las colas
+            queues_dir = cfg.common_dir
+            hist_path = cfg.common_dir / "Historico_Master.txt"
             worker_ids = cfg.worker_ids
             poll_seconds = cfg.poll_seconds
 
@@ -340,32 +373,30 @@ def run_service() -> None:
                 )
 
             if not valid_lines:
-                # Nada que distribuir; respetar cabecera e incompletas
                 time.sleep(poll_seconds)
                 continue
 
             try:
-                append_to_queues(valid_lines, queues_dir, worker_ids)
-                print(f"[OK] Distribuidas {total_valid} líneas a {len(worker_ids)} colas")
+                status = append_to_queues(valid_lines, queues_dir, worker_ids)
+                append_hist_master(valid_lines, worker_ids, status, hist_path)
+                print(f"[OK] Distribuidas {total_valid} lÃ­neas a {len(worker_ids)} colas")
             except Exception as exc:
-                print(f"[ERROR] Falló la distribución: {exc}")
+                print(f"[ERROR] FallÃ³ la distribuciÃ³n: {exc}")
                 time.sleep(poll_seconds)
-                continue  # No recortar para no perder eventos
+                continue
 
             recorte = rewrite_master(master_path, header_line, invalid_lines, incomplete_lines)
             if recorte > 0:
                 print(f"[RECORTE] Se recortaron ~{recorte} bytes del Master (tam orig {original_size})")
 
             elapsed_ms = int((time.time() - cycle_start) * 1000)
-            print(f"[CICLO] Tiempo distribución+recorte: {elapsed_ms} ms")
+            print(f"[CICLO] Tiempo distribuciÃ³n+recorte: {elapsed_ms} ms")
 
         except Exception as exc:
-            # Cualquier error no debe detener el servicio
-            print(f"[ERROR] Ciclo falló: {exc}")
+            print(f"[ERROR] Ciclo fallÃ³: {exc}")
 
         time.sleep(poll_seconds)
 
 
 if __name__ == "__main__":
     run_service()
-
