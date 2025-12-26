@@ -226,14 +226,14 @@ def load_master(master_path: Path) -> Tuple[str | None, List[str], List[str], Li
 
 def validate_lines(complete_lines: List[str]) -> Tuple[List[str], List[str]]:
     """
-    Valida que cada línea tenga exactamente 7 campos (separados por ';').
+    Valida que cada línea tenga 7 u 8 campos (separados por ';').
     Retorna (valid_lines, invalid_lines)
     """
     valid: List[str] = []
     invalid: List[str] = []
     for line in complete_lines:
         fields = line.rstrip("\n").split(";")
-        if len(fields) == 7:
+        if len(fields) in (7, 8):
             valid.append(line)
         else:
             invalid.append(line)

@@ -137,7 +137,8 @@ void AppendEventToCSV(string eventType,
                       double lots,
                       string symbol,
                       double sl,
-                      double tp)
+                      double tp,
+                      double contractSize)
 {
    // Abrir archivo en modo binario para escribir UTF-8
    int handle = FileOpen(InpCSVFileName,
@@ -151,30 +152,33 @@ void AppendEventToCSV(string eventType,
       return;
    }
 
-   // Ir al final para añadir
+   // Ir al final para aÃ±adir
    FileSeek(handle, 0, SEEK_END);
 
    string sLots = DoubleToString(lots, 2);
    string sSL   = (sl > 0.0 ? DoubleToString(sl, Digits) : "");
    string sTP   = (tp > 0.0 ? DoubleToString(tp, Digits) : "");
+   string sCS   = DoubleToString(contractSize, 2);
 
-   // Construir línea manualmente con delimitador ; (solo campos requeridos)
+   // Construir lÃ­nea manualmente con delimitador ; (solo campos requeridos)
    string line = eventType + ";" +
                  IntegerToString(ticket) + ";" +
                  orderTypeStr + ";" +
                  sLots + ";" +
                  symbol + ";" +
                  sSL + ";" +
-                 sTP;
+                 sTP + ";" +
+                 sCS;
 
-   // Convertir línea a UTF-8 y escribir
+   // Convertir lÃ­nea a UTF-8 y escribir
    uchar utf8Bytes[];
    StringToUTF8Bytes(line, utf8Bytes);
 
    // Escribir bytes UTF-8
    FileWriteArray(handle, utf8Bytes);
    
-   // Escribir salto de línea UTF-8 (\n = 0x0A)
+   // Escribir salto de lÃ­nea UTF-8 (
+ = 0x0A)
    uchar newline[] = {0x0A};
    FileWriteArray(handle, newline);
 
@@ -208,7 +212,8 @@ bool TryWriteCloseEvent(int ticket)
                        OrderLots(),
                        OrderSymbol(),
                        OrderStopLoss(),
-                       OrderTakeProfit());
+                       OrderTakeProfit(),
+                       MarketInfo(OrderSymbol(), MODE_TRADECONTRACTSIZE));
       return(true);  // Éxito
    }
    return(false);  // Falló: ticket no encontrado en historial
@@ -288,7 +293,7 @@ void InitCSVIfNeeded()
    }
 
    // Escribir cabecera en UTF-8
-   string header = "event_type;ticket;order_type;lots;symbol;sl;tp";
+   string header = "event_type;ticket;order_type;lots;symbol;sl;tp;contract_size";
    uchar utf8Bytes[];
    StringToUTF8Bytes(header, utf8Bytes);
    FileWriteArray(handle, utf8Bytes);
@@ -391,7 +396,8 @@ void OnTimer()
                              OrderLots(),
                              OrderSymbol(),
                              OrderStopLoss(),
-                             OrderTakeProfit());
+                             OrderTakeProfit(),
+                             MarketInfo(OrderSymbol(), MODE_TRADECONTRACTSIZE));
 
             // Guardar estado inicial (SL/TP)
             g_prevTickets[k] = t;
@@ -439,7 +445,8 @@ void OnTimer()
                              OrderLots(),
                              OrderSymbol(),
                              OrderStopLoss(),
-                             OrderTakeProfit());
+                             OrderTakeProfit(),
+                             MarketInfo(OrderSymbol(), MODE_TRADECONTRACTSIZE));
             
             // Nota: El estado previo se guardará en la sección 4 al final
          }
@@ -489,7 +496,8 @@ void OnTimer()
                                    OrderLots(),
                                    OrderSymbol(),
                                    currentSL,  // Nuevo SL
-                                   currentTP);  // Nuevo TP
+                                   currentTP,   // Nuevo TP
+                                   MarketInfo(OrderSymbol(), MODE_TRADECONTRACTSIZE));
                   
                   // Actualizar estado previo inmediatamente
                   g_prevOrders[prevIdx].sl = currentSL;

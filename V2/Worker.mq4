@@ -34,6 +34,7 @@ struct EventRec
    string symbol;
    double sl;
    double tp;
+   double csOrigin;   // contract size en el origen
    string originalLine;
 };
 
@@ -194,11 +195,17 @@ double AdjustFixedLots(string symbol, double lot)
 //+------------------------------------------------------------------+
 //| Calcula lotaje del worker                                        |
 //+------------------------------------------------------------------+
-double ComputeWorkerLots(string symbol, double masterLots)
+double ComputeWorkerLots(string symbol, double masterLots, double csOrigin)
 {
-   if(InpFondeo)
-      return(masterLots*InpLotMultiplier);
-   return(AdjustFixedLots(symbol, InpFixedLots));
+   double csDest = MarketInfo(symbol, MODE_TRADECONTRACTSIZE);
+   if(csDest<=0.0) csDest = 1.0;
+   double ratio = 1.0;
+   if(csOrigin > 0.0)
+      ratio = csOrigin / csDest;
+
+   double baseLots = (InpFondeo ? masterLots*InpLotMultiplier : InpFixedLots);
+   double scaled   = baseLots * ratio;
+   return(AdjustFixedLots(symbol, scaled));
 }
 
 //+------------------------------------------------------------------+
@@ -339,6 +346,11 @@ bool ParseLine(const string line, EventRec &ev)
       tmp = Trim(parts[6]); StringReplace(tmp, ",", "."); ev.tp = StrToDouble(tmp);
    }
    else ev.tp = 0.0;
+   if(n>7)
+   {
+      tmp = Trim(parts[7]); StringReplace(tmp, ",", "."); ev.csOrigin = StrToDouble(tmp);
+   }
+   else ev.csOrigin = 0.0;
    ev.originalLine = line;
    if(ev.eventType=="" || ev.ticket=="" || ev.symbol=="")
       return(false);
@@ -421,7 +433,7 @@ void OnTimer()
       }
 
       // Calcular lotaje (tras asegurar símbolo)
-      double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots);
+      double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots, ev.csOrigin);
 
       if(ev.eventType=="OPEN")
       {
