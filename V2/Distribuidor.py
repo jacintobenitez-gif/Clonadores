@@ -3,7 +3,7 @@ Distribuidor.py
 ---------------
 
 Servicio 24/7 que:
-- Lee eventos completos desde `Master.txt` (Common\Files)
+- Lee eventos completos desde `Master.txt` (Common\\Files)
 - Valida que cada línea tenga exactamente 7 campos
 - Ignora cabecera (si existe) y líneas incompletas (sin '\n')
 - Distribuye cada evento válido a todas las colas `cola_WORKER_XX.txt` (UTF-8)
