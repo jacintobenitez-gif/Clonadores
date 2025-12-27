@@ -95,17 +95,6 @@ string Upper(string s)
 }
 
 //+------------------------------------------------------------------+
-//| Normaliza símbolo (alias)                                        |
-//+------------------------------------------------------------------+
-string NormalizeSymbol(string sym)
-{
-   string s = Trim(Upper(sym));
-   if(s=="XAUUSD-STD")
-      return("XAUUSD");
-   return(s);
-}
-
-//+------------------------------------------------------------------+
 //| Obtiene contract size usando tickvalue/ticksize (compatibilidad) |
 //+------------------------------------------------------------------+
 double GetContractSize(string symbol)
@@ -312,35 +301,20 @@ ENUM_ORDER_TYPE_FILLING GetFillingType(string symbol)
 //+------------------------------------------------------------------+
 int ReadQueue(string relPath, string &lines[])
 {
-   Print("[DEBUG] ReadQueue: Intentando abrir archivo: ", relPath);
-   ResetLastError();
    int handle = FileOpen(relPath, FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(handle==INVALID_HANDLE)
-   {
-      int errCode = GetLastError();
-      string errDesc = ErrorText(errCode);
-      Print("[ERROR] ReadQueue: No se pudo abrir archivo. Error (", errCode, "): ", errDesc);
-      Print("[ERROR] ReadQueue: Ruta completa intentada: ", relPath);
       return(0);
-   }
-   Print("[DEBUG] ReadQueue: Archivo abierto correctamente, handle=", handle);
    int count=0;
    while(!FileIsEnding(handle))
    {
       string ln = FileReadString(handle);
       // FileReadString se detiene en \n; conservar tal cual
-      if(StringLen(ln)==0) 
-      { 
-         Print("[DEBUG] ReadQueue: Línea vacía encontrada, saltando");
-         continue; 
-      }
+      if(StringLen(ln)==0) { continue; }
       ArrayResize(lines, count+1);
       lines[count]=ln;
-      Print("[DEBUG] ReadQueue: Línea ", count, " leída: ", ln);
       count++;
    }
    FileClose(handle);
-   Print("[DEBUG] ReadQueue: Total líneas leídas: ", count);
    return(count);
 }
 
@@ -349,24 +323,17 @@ int ReadQueue(string relPath, string &lines[])
 //+------------------------------------------------------------------+
 void RewriteQueue(string relPath, string &lines[], int count)
 {
-   Print("[DEBUG] RewriteQueue: Reescribiendo cola con ", count, " líneas");
-   ResetLastError();
    int handle = FileOpen(relPath, FILE_WRITE|FILE_TXT|FILE_COMMON);
    if(handle==INVALID_HANDLE)
    {
-      int errCode = GetLastError();
-      string errDesc = ErrorText(errCode);
-      Print("[ERROR] RewriteQueue: No se pudo reescribir cola: ", relPath, " Error (", errCode, "): ", errDesc);
+      Print("No se pudo reescribir cola: ", relPath, " err=", GetLastError());
       return;
    }
-   Print("[DEBUG] RewriteQueue: Archivo abierto para escritura, handle=", handle);
    for(int i=0;i<count;i++)
    {
-      Print("[DEBUG] RewriteQueue: Escribiendo línea ", i, ": ", lines[i]);
       FileWrite(handle, lines[i]);
    }
    FileClose(handle);
-   Print("[DEBUG] RewriteQueue: Cola reescrita correctamente");
 }
 
 //+------------------------------------------------------------------+
@@ -465,7 +432,7 @@ bool ParseLine(const string line, EventRec &ev)
    tmp = Trim(parts[2]); ev.orderType = Upper(tmp);
 
    tmp = Trim(parts[3]); StringReplace(tmp, ",", "."); ev.lots = StringToDouble(tmp);
-   tmp = Trim(parts[4]); ev.symbol = NormalizeSymbol(tmp);
+   tmp = Trim(parts[4]); ev.symbol = Trim(Upper(tmp));
 
    if(n>5)
    {
@@ -505,32 +472,20 @@ bool ParseLine(const string line, EventRec &ev)
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("[INIT] Iniciando Worker.mq5...");
    g_workerId    = IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
    g_queueFile   = CommonRelative("cola_WORKER_" + g_workerId + ".txt");
    g_historyFile = CommonRelative("historico_WORKER_" + g_workerId + ".txt");
 
-   Print("[INIT] Worker ID: ", g_workerId);
-   Print("[INIT] Archivo cola: ", g_queueFile);
-   Print("[INIT] Archivo histórico: ", g_historyFile);
-   Print("[INIT] Parámetros: InpFondeo=", InpFondeo, " InpLotMultiplier=", InpLotMultiplier, " InpFixedLots=", InpFixedLots, " InpSlippage=", InpSlippage, " InpMagicNumber=", InpMagicNumber, " InpTimerSeconds=", InpTimerSeconds);
-
    if(!EnsureBaseFolder())
-   {
-      Print("[ERROR] INIT: No se pudo asegurar carpeta base");
       return(INIT_FAILED);
-   }
 
    // Configurar CTrade
    trade.SetExpertMagicNumber((int)InpMagicNumber);
    trade.SetDeviationInPoints(InpSlippage);
-   // El tipo de llenado se detectará automáticamente antes de cada operación según el símbolo
    trade.SetAsyncMode(false);
-   Print("[INIT] CTrade configurado: Magic=", InpMagicNumber, " Slippage=", InpSlippage);
 
    EventSetTimer(InpTimerSeconds);
-   Print("[INIT] Timer configurado para ", InpTimerSeconds, " segundos");
-   Print("[INIT] Worker inicializado correctamente. Cola=", g_queueFile, " Historico=", g_historyFile);
+   Print("Worker inicializado. Cola=", g_queueFile, " Historico=", g_historyFile);
    return(INIT_SUCCEEDED);
 }
 
@@ -547,15 +502,10 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   Print("[DEBUG] OnTimer ejecutado");
    string lines[];
    int total = ReadQueue(g_queueFile, lines);
-   Print("[DEBUG] ReadQueue retornó total=", total, " líneas");
    if(total==0)
-   {
-      Print("[DEBUG] No hay líneas en la cola, saliendo");
       return;
-   }
 
    // Detectar cabecera opcional
    int startIdx=0;
@@ -564,37 +514,27 @@ void OnTimer()
       string firstLower = lines[0];
       StringToLower(firstLower);
       if(StringFind(firstLower, "event_type")>=0)
-      {
          startIdx=1;
-         Print("[DEBUG] Detectada cabecera, startIdx=1");
-      }
    }
 
    string remaining[];
    int remainingCount=0;
-   Print("[DEBUG] Procesando ", total-startIdx, " líneas (startIdx=", startIdx, ")");
 
    for(int i=startIdx;i<total;i++)
    {
-      Print("[DEBUG] Procesando línea ", i, ": ", lines[i]);
       EventRec ev;
       if(!ParseLine(lines[i], ev))
       {
-         Print("[DEBUG] Línea ", i, " inválida, descartando: ", lines[i]);
          // línea inválida: descartar
          continue;
       }
-      Print("[DEBUG] Línea parseada: eventType=", ev.eventType, " ticket=", ev.ticket, " symbol=", ev.symbol, " lots=", ev.lots);
 
       // Asegurar símbolo
-      Print("[DEBUG] Intentando seleccionar símbolo: ", ev.symbol);
-      ResetLastError();
       if(!SymbolSelect(ev.symbol, true))
       {
          int errCodeSym = GetLastError();
          string errDescSym = ErrorText(errCodeSym);
          string msg = "Ticket: " + ev.ticket + " - " + ev.eventType + " FALLO: SymbolSelect (" + IntegerToString(errCodeSym) + ") " + errDescSym;
-         Print("[ERROR] ", msg);
          Notify(msg);
          if(ev.eventType!="OPEN")
          {
@@ -606,58 +546,38 @@ void OnTimer()
          // OPEN no se reintenta
          continue;
       }
-      Print("[DEBUG] Símbolo ", ev.symbol, " seleccionado correctamente");
 
       // Calcular lotaje (tras asegurar símbolo)
-      Print("[DEBUG] Calculando lotaje: masterLots=", ev.lots, " csOrigin=", ev.csOrigin);
+      Print("[DEBUG] OnTimer: Llamando ComputeWorkerLots con symbol=", ev.symbol, " ev.lots=", ev.lots, " ev.csOrigin=", ev.csOrigin);
       double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots, ev.csOrigin);
-      Print("[DEBUG] Lotaje calculado: ", lotsWorker);
+      Print("[DEBUG] OnTimer: lotsWorker calculado = ", lotsWorker);
 
       if(ev.eventType=="OPEN")
       {
-         Print("[DEBUG] Procesando evento OPEN: symbol=", ev.symbol, " orderType=", ev.orderType, " lotsWorker=", lotsWorker, " sl=", ev.sl, " tp=", ev.tp, " ticket=", ev.ticket);
-         ResetLastError();
-         
          // Obtener tick actual para precios
-         Print("[DEBUG] Obteniendo tick para ", ev.symbol);
          MqlTick tick;
          if(!SymbolInfoTick(ev.symbol, tick))
          {
             int errCode = GetLastError();
             string errDesc = ErrorText(errCode);
-            string errBase = "ERROR: OPEN - No tick disponible (" + IntegerToString(errCode) + ") " + errDesc;
+            string errBase = "ERROR: OPEN (" + IntegerToString(errCode) + ") " + errDesc;
             string err = "Ticket: " + ev.ticket + " - " + errBase;
-            Print("[ERROR] ", err);
             Notify(err);
             AppendHistory(errBase, ev, 0, 0, 0, 0, 0);
             continue;
          }
-         Print("[DEBUG] Tick obtenido: ask=", tick.ask, " bid=", tick.bid);
          
          // Configurar tipo de llenado según el símbolo
          ENUM_ORDER_TYPE_FILLING fillingType = GetFillingType(ev.symbol);
-         Print("[DEBUG] Tipo de llenado detectado: ", EnumToString(fillingType));
          trade.SetTypeFilling(fillingType);
          
-         Print("[DEBUG] Configuración CTrade: Magic=", InpMagicNumber, " Slippage=", InpSlippage);
-         ResetLastError();
          bool result = false;
-         Print("[DEBUG] Ejecutando ", ev.orderType, " con lots=", lotsWorker, " symbol=", ev.symbol, " sl=", ev.sl, " tp=", ev.tp, " comment=", ev.ticket);
          // Usar 0.0 para precio de mercado actual (más seguro en MQL5)
          if(ev.orderType=="BUY")
             result = trade.Buy(lotsWorker, ev.symbol, 0.0, ev.sl, ev.tp, ev.ticket);
          else
             result = trade.Sell(lotsWorker, ev.symbol, 0.0, ev.sl, ev.tp, ev.ticket);
          
-         Print("[DEBUG] Resultado de ", ev.orderType, ": ", (result ? "EXITOSO" : "FALLO"));
-         
-         // Obtener precio ejecutado para el histórico
-         double priceExecuted = 0.0;
-         if(ev.orderType=="BUY")
-            priceExecuted = tick.ask;
-         else
-            priceExecuted = tick.bid;
-            
          if(!result)
          {
             // Capturar el error inmediatamente y registrar código + descripción
@@ -665,8 +585,6 @@ void OnTimer()
             string errDesc = ErrorText(errCode);
             string errBase = "ERROR: OPEN (" + IntegerToString(errCode) + ") " + errDesc;
             string err = "Ticket: " + ev.ticket + " - " + errBase;
-            Print("[ERROR] ", err);
-            Print("[ERROR] Resultado trade: retcode=", trade.ResultRetcode(), " retcode_description=", trade.ResultRetcodeDescription());
             Notify(err);
             // En el histórico dejamos el texto de error base (código + descripción)
             AppendHistory(errBase, ev, 0, 0, 0, 0, 0);
@@ -675,10 +593,8 @@ void OnTimer()
          else
          {
             string ok = "Ticket: " + ev.ticket + " - OPEN EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(lotsWorker,2) + " lots";
-            Print("[OK] ", ok);
-            Print("[OK] Ticket nuevo: ", trade.ResultOrder());
             Notify(ok);
-            AppendHistory("EXITOSO", ev, priceExecuted, TimeCurrent(), 0, 0, 0);
+            AppendHistory("EXITOSO", ev, 0, 0, 0, 0, 0);
          }
       }
       else if(ev.eventType=="CLOSE")
@@ -690,7 +606,6 @@ void OnTimer()
             RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
             continue;
          }
-         
          if(!PositionSelectByTicket(posTicket))
          {
             AppendHistory(FormatLastError("ERROR: CLOSE select"), ev, 0, 0, 0, 0, 0);
@@ -700,7 +615,6 @@ void OnTimer()
             remainingCount++;
             continue;
          }
-         
          ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
          double volume = PositionGetDouble(POSITION_VOLUME);
          
@@ -726,7 +640,6 @@ void OnTimer()
          ENUM_ORDER_TYPE_FILLING fillingType = GetFillingType(ev.symbol);
          trade.SetTypeFilling(fillingType);
          
-         ResetLastError();
          if(trade.PositionClose(posTicket))
          {
             string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(volume,2) + " lots";
@@ -757,7 +670,6 @@ void OnTimer()
             RemoveTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
             continue;
          }
-         
          if(!PositionSelectByTicket(posTicket))
          {
             AppendHistory(FormatLastError("ERROR: MODIFY select"), ev, 0, 0, 0, 0, 0);
@@ -767,12 +679,8 @@ void OnTimer()
             remainingCount++;
             continue;
          }
-         
          double newSL = (ev.sl>0 ? ev.sl : 0.0);
          double newTP = (ev.tp>0 ? ev.tp : 0.0);
-         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-         
-         ResetLastError();
          if(trade.PositionModify(posTicket, newSL, newTP))
          {
             int symDigits = (int)SymbolInfoInteger(ev.symbol, SYMBOL_DIGITS);
@@ -807,23 +715,10 @@ void OnTimer()
          }
       }
       // Otros event_type: ignorar
-      else
-      {
-         Print("[DEBUG] Evento desconocido ignorado: ", ev.eventType);
-      }
    }
 
-   Print("[DEBUG] Fin del procesamiento. Líneas restantes: ", remainingCount);
    // Reescribir cola con pendientes
-   if(remainingCount > 0)
-   {
-      Print("[DEBUG] Reescribiendo cola con ", remainingCount, " líneas pendientes");
-      RewriteQueue(g_queueFile, remaining, remainingCount);
-   }
-   else
-   {
-      Print("[DEBUG] No hay líneas pendientes, cola vacía");
-   }
+   RewriteQueue(g_queueFile, remaining, remainingCount);
 }
 
 //+------------------------------------------------------------------+

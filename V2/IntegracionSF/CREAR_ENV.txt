@@ -1,0 +1,16 @@
+# INSTRUCCIONES PARA CREAR ARCHIVO .env
+# 
+# 1. Crea un archivo llamado exactamente: .env
+# 2. Copia y pega el siguiente contenido:
+# 3. Guarda el archivo en la carpeta V2
+
+SALESFORCE_USERNAME=jacinto.benitez+00dj6000001hg1i@salesforce.com
+SALESFORCE_PASSWORD=Jacinto1974
+SALESFORCE_SECURITY_TOKEN=bYUGqGk6Y5hL7tbnZUEXCRpgo
+SALESFORCE_DOMAIN=test
+
+# IMPORTANTE:
+# - El archivo debe llamarse exactamente .env (con el punto al inicio)
+# - Está protegido por .gitignore y NO se subirá a Git
+# - Mantén este archivo seguro y privado
+

@@ -1,0 +1,22 @@
+# Configuración de Salesforce
+# Copia este contenido a un archivo llamado .env en la misma carpeta
+# IMPORTANTE: .env está en .gitignore y NO se subirá a Git
+
+# Usuario de Salesforce (email completo)
+SALESFORCE_USERNAME=tu_usuario@salesforce.com
+
+# Contraseña de Salesforce
+SALESFORCE_PASSWORD=tu_password
+
+# Security Token (obtener desde Setup > Reset My Security Token)
+# Se envía por email después de resetearlo
+SALESFORCE_SECURITY_TOKEN=tu_security_token_aqui
+
+# Domain: 'test' para sandbox, 'login' para producción
+# Para custom domains como trailsignup-beb5322842f86c.my.salesforce.com
+# puedes usar 'test' o dejar vacío (se detecta automáticamente)
+SALESFORCE_DOMAIN=test
+
+# Opcional: URL de instancia específica (solo si domain no funciona)
+# SALESFORCE_INSTANCE_URL=https://trailsignup-beb5322842f86c.my.salesforce.com
+

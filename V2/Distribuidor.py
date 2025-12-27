@@ -61,13 +61,16 @@ def load_file_config(cfg_path: Path) -> dict:
       common_files_dir=C:\\Users\\...\\Common\\Files
       master_filename=Master.txt
       worker_ids=01,02,03
+      worker_id=71617942|xaudusd-std=XAUUSD|eurusd-std=EURUSD
       poll_seconds=1.0
     Líneas vacías o que empiezan por # se ignoran.
     """
     cfg: dict = {}
     workers: List[str] = []
+    symbol_mappings: dict[str, dict[str, str]] = {}
     if not cfg_path.exists():
         cfg["worker_ids_list"] = workers
+        cfg["symbol_mappings"] = symbol_mappings
         return cfg
     try:
         for raw in cfg_path.read_text(encoding="utf-8").splitlines():
@@ -82,12 +85,37 @@ def load_file_config(cfg_path: Path) -> dict:
             if not key:
                 continue
             if key == "worker_id":
-                workers.append(value)
+                # Formato: worker_id=<id>|<symbol_origen>=<symbol_destino>|...
+                if "|" in value:
+                    # Separar worker_id de los mapeos
+                    parts = value.split("|", 1)
+                    worker_id = parts[0].strip()
+                    workers.append(worker_id)
+                    
+                    # Parsear mapeos de símbolos
+                    if len(parts) > 1 and parts[1].strip():
+                        mappings_str = parts[1].strip()
+                        worker_mappings: dict[str, str] = {}
+                        # Dividir por | para obtener múltiples mapeos
+                        for mapping_pair in mappings_str.split("|"):
+                            mapping_pair = mapping_pair.strip()
+                            if "=" in mapping_pair:
+                                symbol_orig, symbol_dest = mapping_pair.split("=", 1)
+                                symbol_orig = symbol_orig.strip().upper()
+                                symbol_dest = symbol_dest.strip().upper()
+                                if symbol_orig and symbol_dest:
+                                    worker_mappings[symbol_orig] = symbol_dest
+                        if worker_mappings:
+                            symbol_mappings[worker_id] = worker_mappings
+                else:
+                    # Sin mapeos, solo worker_id
+                    workers.append(value)
             else:
                 cfg[key] = value
     except Exception as exc:
         print(f"[WARN] No se pudo leer {cfg_path}: {exc}")
     cfg["worker_ids_list"] = workers
+    cfg["symbol_mappings"] = symbol_mappings
     return cfg
 
 
@@ -96,6 +124,7 @@ class Config:
     common_dir: Path
     master_filename: str
     worker_ids: List[str]
+    symbol_mappings: dict[str, dict[str, str]]  # {worker_id: {symbol_origen: symbol_destino}}
     poll_seconds: float
     reload_minutes: float
 
@@ -137,6 +166,8 @@ def load_config() -> Config:
     if not worker_ids:
         worker_ids = DEFAULT_WORKER_IDS
 
+    symbol_mappings = file_cfg.get("symbol_mappings", {})
+
     poll_seconds = env_float("POLL_SECONDS")
     if poll_seconds is None:
         file_poll = file_cfg.get("poll_seconds")
@@ -163,6 +194,7 @@ def load_config() -> Config:
         common_dir=common_dir,
         master_filename=master_filename,
         worker_ids=worker_ids,
+        symbol_mappings=symbol_mappings,
         poll_seconds=float(poll_seconds),
         reload_minutes=float(reload_minutes),
     )
@@ -241,33 +273,63 @@ def validate_lines(complete_lines: List[str]) -> Tuple[List[str], List[str]]:
     return valid, invalid
 
 
-
-def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[str]) -> dict:
+def map_symbol_for_worker(worker_id: str, symbol: str, mappings: dict[str, dict[str, str]]) -> str:
     """
-    Escribe cada lÃ­nea vÃ¡lida en todas las colas de workers y devuelve status por worker.
+    Aplica mapeo de símbolo para un worker específico.
+    Retorna el símbolo mapeado si existe, o el símbolo original si no hay mapeo.
+    """
+    symbol_upper = symbol.upper()
+    if worker_id in mappings:
+        if symbol_upper in mappings[worker_id]:
+            return mappings[worker_id][symbol_upper]
+    return symbol  # Sin mapeo, retornar original
+
+
+
+def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[str], symbol_mappings: dict[str, dict[str, str]]) -> dict:
+    """
+    Escribe cada línea válida en todas las colas de workers aplicando mapeo de símbolos por worker.
+    Devuelve status por worker.
     """
     queues_dir.mkdir(parents=True, exist_ok=True)
-    lines_to_write = [ln if ln.endswith("\n") else ln + "\n" for ln in valid_lines]
     tickets = []
-    for ln in lines_to_write:
-        parts = ln.strip().split(";")
+    for ln in valid_lines:
+        parts = ln.rstrip("\n").split(";")
         if len(parts) > 1:
             tickets.append(parts[1])
     tickets_str = ",".join(tickets) if tickets else "desconocido"
 
     status = {}
     for worker_id in worker_ids:
+        # Aplicar mapeo de símbolos para este worker
+        mapped_lines: List[str] = []
+        for line in valid_lines:
+            # Parsear línea: event_type;ticket;order_type;lots;symbol;sl;tp[;contract_size]
+            parts = line.rstrip("\n").split(";")
+            if len(parts) >= 5:
+                original_symbol = parts[4]
+                mapped_symbol = map_symbol_for_worker(worker_id, original_symbol, symbol_mappings)
+                # Reemplazar símbolo en la línea
+                parts[4] = mapped_symbol
+                mapped_line = ";".join(parts)
+                if not mapped_line.endswith("\n"):
+                    mapped_line += "\n"
+                mapped_lines.append(mapped_line)
+            else:
+                # Línea inválida, mantener original
+                mapped_lines.append(line if line.endswith("\n") else line + "\n")
+        
         queue_path = queues_dir / f"cola_WORKER_{worker_id}.txt"
         ok = True
         try:
             with open(queue_path, "a", encoding="utf-8", newline="") as fh:
-                fh.writelines(lines_to_write)
+                fh.writelines(mapped_lines)
         except Exception as exc:
             ok = False
             pending_path = queues_dir / f"pendientes_worker_{worker_id}.txt"
             try:
                 with open(pending_path, "a", encoding="utf-8", newline="") as ph:
-                    ph.writelines(lines_to_write)
+                    ph.writelines(mapped_lines)
             except Exception as pend_exc:
                 print(f"[ALERTA] worker={worker_id} ticket={tickets_str} fallo al guardar pendientes: {pend_exc}")
             else:
@@ -276,11 +338,11 @@ def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[
     return status
 
 
-def append_hist_master(valid_lines: List[str], worker_ids: List[str], status: dict, hist_path: Path) -> None:
+def append_hist_master(valid_lines: List[str], hist_path: Path) -> None:
     """
-    Log de distribuciÃ³n:
-    - lÃ­nea original del Master con clonacion_time aÃ±adido
-    - una lÃ­nea de resultado por worker: ticket;worker;OK|NOK;clonacion_time
+    Log de eventos distribuidos:
+    - Línea original del Master con clonacion_time añadido
+    - Formato: event_type;ticket;order_type;lots;symbol;sl;tp;timestamp
     """
     hist_path.parent.mkdir(parents=True, exist_ok=True)
     clonacion_time = datetime.now().strftime("%Y.%m.%d %H:%M:%S.%f")[:-3]
@@ -288,6 +350,21 @@ def append_hist_master(valid_lines: List[str], worker_ids: List[str], status: di
     for ln in valid_lines:
         base = ln.rstrip("\n")
         lines_out.append(base + ";" + clonacion_time + "\n")
+    with open(hist_path, "a", encoding="utf-8", newline="") as fh:
+        fh.writelines(lines_out)
+
+
+def append_hist_clonacion(valid_lines: List[str], worker_ids: List[str], status: dict, hist_path: Path) -> None:
+    """
+    Log de resultados de clonación por worker:
+    - Una línea por worker por evento: ticket;worker_id;resultado;timestamp
+    - Relación 1 a N con Historico_Master.txt (1 evento → N workers)
+    """
+    hist_path.parent.mkdir(parents=True, exist_ok=True)
+    clonacion_time = datetime.now().strftime("%Y.%m.%d %H:%M:%S.%f")[:-3]
+    lines_out: List[str] = []
+    for ln in valid_lines:
+        base = ln.rstrip("\n")
         parts = base.split(";")
         ticket = parts[1] if len(parts) > 1 else ""
         for wid in worker_ids:
@@ -339,7 +416,8 @@ def run_service() -> None:
             cfg = get_config()
             master_path = cfg.common_dir / cfg.master_filename
             queues_dir = cfg.common_dir
-            hist_path = cfg.common_dir / "Historico_Master.txt"
+            hist_master_path = cfg.common_dir / "Historico_Master.txt"
+            hist_clonacion_path = cfg.common_dir / "historico_clonacion.txt"
             worker_ids = cfg.worker_ids
             poll_seconds = cfg.poll_seconds
 
@@ -369,11 +447,12 @@ def run_service() -> None:
                 continue
 
             try:
-                status = append_to_queues(valid_lines, queues_dir, worker_ids)
-                append_hist_master(valid_lines, worker_ids, status, hist_path)
-                print(f"[OK] Distribuidas {total_valid} lÃ­neas a {len(worker_ids)} colas")
+                status = append_to_queues(valid_lines, queues_dir, worker_ids, cfg.symbol_mappings)
+                append_hist_master(valid_lines, hist_master_path)
+                append_hist_clonacion(valid_lines, worker_ids, status, hist_clonacion_path)
+                print(f"[OK] Distribuidas {total_valid} líneas a {len(worker_ids)} colas")
             except Exception as exc:
-                print(f"[ERROR] FallÃ³ la distribuciÃ³n: {exc}")
+                print(f"[ERROR] Falló la distribución: {exc}")
                 time.sleep(poll_seconds)
                 continue
 
@@ -382,7 +461,7 @@ def run_service() -> None:
                 print(f"[RECORTE] Se recortaron ~{recorte} bytes del Master (tam orig {original_size})")
 
             elapsed_ms = int((time.time() - cycle_start) * 1000)
-            print(f"[CICLO] Tiempo distribuciÃ³n+recorte: {elapsed_ms} ms")
+            print(f"[CICLO] Tiempo distribución+recorte: {elapsed_ms} ms")
 
         except Exception as exc:
             print(f"[ERROR] Ciclo fallÃ³: {exc}")

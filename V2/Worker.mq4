@@ -88,17 +88,6 @@ string Upper(string s)
 }
 
 //+------------------------------------------------------------------+
-//| Normaliza símbolo (alias)                                        |
-//+------------------------------------------------------------------+
-string NormalizeSymbol(string sym)
-{
-   string s = Trim(Upper(sym));
-   if(s=="XAUUSD-STD")
-      return("XAUUSD");
-   return(s);
-}
-
-//+------------------------------------------------------------------+
 //| Obtiene contract size usando tickvalue/ticksize (compatibilidad) |
 //+------------------------------------------------------------------+
 double GetContractSize(string symbol)
@@ -410,7 +399,7 @@ bool ParseLine(const string line, EventRec &ev)
    tmp = Trim(parts[2]); ev.orderType = Upper(tmp);
 
    tmp = Trim(parts[3]); StringReplace(tmp, ",", "."); ev.lots = StrToDouble(tmp);
-   tmp = Trim(parts[4]); ev.symbol = NormalizeSymbol(tmp);
+   tmp = Trim(parts[4]); ev.symbol = Trim(Upper(tmp));
 
    if(n>5)
    {

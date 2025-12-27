@@ -113,15 +113,36 @@ Si una línea no cumple lo anterior:
 
 ### 6.1 Distribución a todas las colas
 
-* Cada evento válido se copia **a todas** las colas `cola_WORKER_XX.csv`.
-* Se mantiene la regla “1 evento = 1 línea” también en cada cola.
+* Cada evento válido se copia **a todas** las colas `cola_WORKER_XX.txt`.
+* Se mantiene la regla "1 evento = 1 línea" también en cada cola.
 
-### 6.2 Consistencia de reparto
+### 6.2 Mapeo de símbolos por worker
+
+* Antes de escribir en cada cola, Distribuidor.py aplica **mapeos de símbolos** específicos por worker.
+* Los mapeos se configuran en `distribuidor_config.txt` con el formato:
+  ```
+  worker_id=<id>|<symbol_origen>=<symbol_destino>|<symbol_origen2>=<symbol_destino2>
+  ```
+* Ejemplo:
+  ```
+  worker_id=3037589|xaudusd-std=GOLD
+  worker_id=71617942|xaudusd-std=XAUUSD
+  ```
+* **Proceso de mapeo**:
+  1. Se lee el símbolo del evento (campo 4: `symbol`)
+  2. Se consulta si existe mapeo para ese worker y símbolo
+  3. Si existe mapeo, se reemplaza el símbolo original por el mapeado
+  4. Si no existe mapeo, se mantiene el símbolo original
+* Los símbolos se normalizan a **mayúsculas** para comparación (case-insensitive).
+* **Ventaja**: Permite que diferentes brokers/workers usen nombres de símbolos distintos (ej: `XAUUSD-STD` → `GOLD` para un broker específico).
+
+### 6.3 Consistencia de reparto
 
 * El objetivo funcional es que un evento válido:
 
   * **llegue a cada Worker** a través de su cola
-  * manteniendo el mismo contenido de evento
+  * con el símbolo **mapeado según la configuración** de ese worker
+  * manteniendo el resto del contenido del evento sin cambios
 
 ---
 
@@ -144,7 +165,50 @@ Tras distribuir eventos, Distribuidor.py realiza una limpieza del origen:
 
 ## 8. Registro y trazabilidad (logging funcional)
 
-Distribuidor.py deja trazabilidad operativa de:
+Distribuidor.py mantiene dos archivos históricos separados para trazabilidad:
+
+### 8.1 Historico_Master.txt
+
+* **Ubicación**: `Common\Files\Historico_Master.txt`
+* **Contenido**: Líneas de eventos distribuidos con timestamp
+* **Formato**: `event_type;ticket;order_type;lots;symbol;sl;tp;timestamp`
+* **Ejemplo**:
+  ```
+  OPEN;123;BUY;0.1;XAUUSD-STD;0;0;2025.01.15 14:30:25.123
+  CLOSE;456;SELL;0.2;EURUSD;1.0850;1.0900;2025.01.15 14:30:26.456
+  ```
+* **Relación**: 1 evento = 1 línea
+* **Propósito**: Registro de eventos distribuidos (tabla de eventos para Salesforce)
+
+### 8.2 historico_clonacion.txt
+
+* **Ubicación**: `Common\Files\historico_clonacion.txt`
+* **Contenido**: Resultados de clonación por worker (una línea por worker por evento)
+* **Formato**: `ticket;worker_id;resultado;timestamp`
+* **Ejemplo**:
+  ```
+  123;71617942;OK;2025.01.15 14:30:25.123
+  123;511029358;OK;2025.01.15 14:30:25.123
+  123;3037589;NOK;2025.01.15 14:30:25.123
+  ```
+* **Relación**: 1 evento = N líneas (una por cada worker configurado)
+* **Propósito**: Registro de resultados de clonación por worker (tabla de clonaciones para Salesforce)
+* **Relación 1 a N**: Cada evento en `Historico_Master.txt` tiene múltiples entradas en `historico_clonacion.txt` (una por worker)
+
+### 8.3 Campos de resultado
+
+* `OK`: El evento se escribió correctamente en la cola del worker
+* `NOK`: Falló la escritura en la cola (el evento se guardó en `pendientes_worker_XX.txt`)
+
+### 8.4 Timestamp de clonación
+
+* Formato: `YYYY.MM.DD HH:MM:SS.mmm` (milisegundos)
+* Todos los eventos distribuidos en el mismo ciclo comparten el mismo timestamp
+* Permite correlacionar eventos entre ambos archivos históricos mediante `ticket` + `timestamp`
+
+### 8.5 Trazabilidad operativa adicional
+
+Distribuidor.py también registra en consola:
 
 * inicio del servicio
 * detección de nuevos eventos
@@ -178,7 +242,18 @@ Con Distribuidor.py funcionando:
 * **Campos**:
   * `common_files_dir`: ruta a `Common\Files`. Si está vacío se usa la ruta por defecto de MetaTrader.
   * `master_filename`: nombre del fichero maestro (por defecto `Master.txt`).
-  * `worker_id`: se puede repetir una línea por cada worker, p.ej. tres líneas `worker_id=01`, `worker_id=02`, `worker_id=03` significan 3 workers. (Compatibilidad: si existe `worker_ids` con comas se usa, pero la forma preferida es una línea por worker).
+  * `worker_id`: se puede repetir una línea por cada worker. Dos formatos soportados:
+    * **Sin mapeos**: `worker_id=71617942` (solo ID del worker)
+    * **Con mapeos**: `worker_id=71617942|xaudusd-std=XAUUSD|eurusd-std=EURUSD` (ID + mapeos de símbolos separados por `|`)
+    * Cada mapeo tiene formato `symbol_origen=symbol_destino`
+    * Se pueden definir múltiples mapeos por worker separados por `|`
+    * Los símbolos se normalizan automáticamente a mayúsculas
+    * Ejemplo completo:
+      ```
+      worker_id=3037589|xaudusd-std=GOLD
+      worker_id=71617942|xaudusd-std=XAUUSD|eurusd-std=EURUSD
+      worker_id=511029358
+      ```
   * `poll_seconds`: intervalo de sondeo en segundos, p.ej. `1.0`.
   * `reload_minutes`: intervalo en minutos para recargar la configuración en caliente (por defecto 15).
 

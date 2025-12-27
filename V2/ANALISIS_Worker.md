@@ -1,11 +1,12 @@
-ANÁLISIS FUNCIONAL – Worker.mq4 (V2)
-=====================================
+ANÁLISIS FUNCIONAL – Worker.mq4 / Worker.mq5 (V2)
+===================================================
 
 Objetivo
 --------
-- EA “worker” que ejecuta eventos OPEN/CLOSE/MODIFY en la cuenta local a partir de un archivo de cola.
+- EA "worker" que ejecuta eventos OPEN/CLOSE/MODIFY en la cuenta local a partir de un archivo de cola.
 - Usa el comentario de la orden como ticket maestro para identificar y evitar duplicados.
 - Escribe histórico de ejecución y envía notificaciones push directas con `SendNotification()`.
+- **Nota**: El Worker recibe símbolos ya mapeados del Distribuidor.py; no realiza mapeos de símbolos, solo ejecuta órdenes lo más rápido posible.
 
 Entradas / Parámetros (Inputs)
 ------------------------------
@@ -36,17 +37,29 @@ Entradas / Parámetros (Inputs)
   - CLOSE: rellenar `close_price`, `close_time`, `profit`; `open_*` vacíos.
   - MODIFY: rellenar `sl`/`tp` nuevos; precios/tiempos pueden quedar vacíos si no aplican. En el histórico se detalla `SL=` y `TP=` en el resultado.
 
-Gestión de símbolos (alias)
----------------------------
-- Normalizar símbolo antes de operar:
-  - Caso conocido: si llega `XAUUSD-STD`, traducir a `XAUUSD`.
-  - Se puede extender la tabla de alias en código (p. ej. quitar sufijos comunes).
-- Función `NormalizeSymbol(inputSymbol)`:
-  - Si `inputSymbol == "XAUUSD-STD"`, retornar `"XAUUSD"`.
-  - Si no hay alias, retornar el mismo valor.
-- `ensureSymbol`:
-  - Usa el símbolo normalizado para `SymbolSelect(symbol, true)`.
-  - Operaciones (OrderSend/Close/Modify) usan siempre el símbolo normalizado.
+Gestión de símbolos
+-------------------
+- **El símbolo viene ya mapeado del Distribuidor.py**: El Distribuidor aplica los mapeos específicos por worker antes de escribir en la cola (ej: `XAUUSD-STD` → `GOLD` para un worker específico).
+- El Worker solo realiza normalización básica de formato:
+  - Eliminar espacios (trim)
+  - Convertir a mayúsculas (upper)
+- El símbolo recibido en la cola es el que se usa directamente para operar:
+  - `SymbolSelect(symbol, true)` usa el símbolo tal como viene de la cola
+  - Operaciones (OrderSend/Close/Modify) usan el símbolo sin transformaciones adicionales
+- **Ventaja**: Los Workers son más rápidos al no procesar lógica de mapeo; toda la lógica de mapeo está centralizada en el Distribuidor.
+
+**Flujo completo de símbolos:**
+```
+1. LectorOrdenes.mq4 → Escribe símbolo original: "XAUUSD-STD"
+   ↓
+2. Distribuidor.py → Lee "XAUUSD-STD" y mapea según worker:
+   - Worker 3037589: "XAUUSD-STD" → "GOLD"
+   - Worker 71617942: "XAUUSD-STD" → "XAUUSD"
+   ↓
+3. Workers → Reciben símbolo ya mapeado y ejecutan directamente:
+   - Worker 3037589 ejecuta con "GOLD"
+   - Worker 71617942 ejecuta con "XAUUSD"
+```
 
 Inicialización (OnInit)
 -----------------------
@@ -61,8 +74,8 @@ Bucle principal (OnTimer)
 2) Leer líneas completas; ignorar vacías.
 3) Parsear por `;` en el orden: event_type, ticket, order_type, lots, symbol, sl, tp.
 4) Para cada evento:
-   - Normalizar `event_type` (OPEN/CLOSE/MODIFY) y `order_type` (BUY/SELL).
-   - Normalizar `symbol` con `NormalizeSymbol` (p. ej. `XAUUSD-STD` → `XAUUSD`) y usar el normalizado en todo el flujo.
+   - Normalizar `event_type` (OPEN/CLOSE/MODIFY) y `order_type` (BUY/SELL) a mayúsculas.
+   - Normalizar `symbol` básicamente: eliminar espacios y convertir a mayúsculas (el símbolo ya viene mapeado del Distribuidor).
 - Calcular `lots_worker` (con escalado por contract size):
      - `cs_dest = MarketInfo(symbol, MODE_TRADECONTRACTSIZE)` (si ≤0 usar 1.0).
      - Si la línea trae `contract_size` (>0), `ratio = cs_origin / cs_dest`, si no, ratio=1.
@@ -72,13 +85,13 @@ Bucle principal (OnTimer)
      - `lots_worker = AdjustFixedLots(symbol, base * ratio)` respetando min/max/step del destino.
    - `comment` = ticket maestro (string).
    - OPEN:
-     - Asegurar símbolo en MarketWatch (`SymbolSelect(symbol_normalizado, true)`).
+     - Asegurar símbolo en MarketWatch (`SymbolSelect(symbol, true)`).
      - Precio: `Ask` si BUY, `Bid` si SELL.
-     - `OrderSend(OP_BUY/OP_SELL, lots_worker, price, Slippage, sl, tp, comment, MagicNumber)` sobre el símbolo normalizado.
+     - `OrderSend(OP_BUY/OP_SELL, lots_worker, price, Slippage, sl, tp, comment, MagicNumber)` sobre el símbolo recibido.
      - Si éxito: histórico `resultado=EXITOSO`, set `open_price`, `open_time=TimeCurrent()`, `sl`, `tp`.
      - Si fallo: histórico `resultado=ERROR: <código/texto>`, **no se reintenta** (se elimina de la cola).
    - CLOSE:
-     - Buscar orden/posición abierta con `OrderComment()==ticket` y símbolo coincide (usando el símbolo normalizado).
+     - Buscar orden/posición abierta con `OrderComment()==ticket` y símbolo coincide (usando el símbolo recibido).
      - Si no existe: histórico `resultado=No existe operacion abierta`; eliminar línea.
      - Si existe:
        - Orden contraria (BUY→SELL, SELL→BUY) por el mismo volumen; precio Bid/Ask.
@@ -86,7 +99,7 @@ Bucle principal (OnTimer)
        - Si éxito: histórico `resultado=CLOSE OK`, `close_price`, `close_time`, `profit=OrderProfit()`.
        - Si fallo: histórico `resultado=ERROR: ...`, mantener línea para reintento.
   - MODIFY:
-     - Buscar posición abierta (mismo criterio, símbolo normalizado).
+     - Buscar posición abierta (mismo criterio, símbolo recibido).
      - Si no existe: histórico `resultado=No existe operacion abierta`; eliminar línea.
      - Si existe: `OrderModify` con nuevos `sl`/`tp` (0 si no vienen).
        - Si éxito: histórico `resultado=MODIFY OK SL=<...> TP=<...>` (sl/tp nuevos).
