@@ -54,6 +54,8 @@ V2/
 ├── .env                          ← Credenciales (NO mover)
 ├── IntegracionSF/                ← Esta carpeta
 │   ├── README.md                 ← Este archivo
+│   ├── setup_salesforce.py      ← Wrapper (ejecutar desde V2/)
+│   ├── test_salesforce.py        ← Wrapper (ejecutar desde V2/)
 │   ├── setup_salesforce_env.py
 │   ├── test_salesforce_connection.py
 │   ├── ANALISIS_IntegracionSalesforce.md
@@ -78,10 +80,10 @@ V2/
 
 ## Nota
 
-Los scripts Python están en `IntegracionSF/` pero deben ejecutarse desde la carpeta `V2` usando los scripts wrapper:
+Los scripts Python están en `IntegracionSF/` y deben ejecutarse desde la carpeta `V2`:
 
-- **Desde V2**: `python test_salesforce.py` (usa `IntegracionSF/test_salesforce_connection.py`)
-- **Desde V2**: `python setup_salesforce.py` (usa `IntegracionSF/setup_salesforce_env.py`)
+- **Desde V2**: `python IntegracionSF/test_salesforce.py` (wrapper que usa `test_salesforce_connection.py`)
+- **Desde V2**: `python IntegracionSF/setup_salesforce.py` (wrapper que usa `setup_salesforce_env.py`)
 
 O directamente:
 - **Desde V2**: `python IntegracionSF/test_salesforce_connection.py`

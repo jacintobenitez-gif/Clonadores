@@ -395,6 +395,10 @@ ulong FindOpenPosition(const string symbol, const string ticket)
       ulong posTicket = PositionGetTicket(i);
       if(posTicket==0) continue;
       
+      // PositionGetTicket selecciona automáticamente la posición
+      // pero verificamos que la selección sea exitosa por seguridad
+      if(!PositionSelectByTicket(posTicket)) continue;
+      
       string posSymbol = PositionGetString(POSITION_SYMBOL);
       if(posSymbol!=symbol) continue;
       
@@ -572,11 +576,12 @@ void OnTimer()
          trade.SetTypeFilling(fillingType);
          
          bool result = false;
-         // Usar 0.0 para precio de mercado actual (más seguro en MQL5)
+         // Usar precio explícito del tick (más seguro y explícito)
+         double price = (ev.orderType=="BUY" ? tick.ask : tick.bid);
          if(ev.orderType=="BUY")
-            result = trade.Buy(lotsWorker, ev.symbol, 0.0, ev.sl, ev.tp, ev.ticket);
+            result = trade.Buy(lotsWorker, ev.symbol, price, ev.sl, ev.tp, ev.ticket);
          else
-            result = trade.Sell(lotsWorker, ev.symbol, 0.0, ev.sl, ev.tp, ev.ticket);
+            result = trade.Sell(lotsWorker, ev.symbol, price, ev.sl, ev.tp, ev.ticket);
          
          if(!result)
          {
