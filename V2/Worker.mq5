@@ -297,24 +297,183 @@ ENUM_ORDER_TYPE_FILLING GetFillingType(string symbol)
 }
 
 //+------------------------------------------------------------------+
-//| Lee todas las líneas del archivo de cola                         |
+//| Convierte bytes UTF-8 a string (MQL5)                             |
+//+------------------------------------------------------------------+
+string UTF8ToString(uchar &bytes[], int startPos = 0, int skipBOM = 0)
+{
+   if(skipBOM > 0 && startPos + skipBOM < ArraySize(bytes))
+      startPos += skipBOM;
+   
+   string result = "";
+   int size = ArraySize(bytes);
+   
+   for(int i = startPos; i < size; i++)
+   {
+      uchar b = bytes[i];
+      
+      // ASCII (0x00-0x7F)
+      if(b < 0x80)
+      {
+         if(b == 0) break; // Fin de string
+         result += ShortToString((ushort)b);
+      }
+      // UTF-8: 110xxxxx 10xxxxxx (2 bytes)
+      else if((b & 0xE0) == 0xC0 && i + 1 < size)
+      {
+         uchar b2 = bytes[i+1];
+         if((b2 & 0xC0) == 0x80)
+         {
+            int codePoint = ((b & 0x1F) << 6) | (b2 & 0x3F);
+            if(codePoint < 0x10000)
+            {
+               result += ShortToString((ushort)codePoint);
+            }
+            i++;
+         }
+         else
+         {
+            result += ShortToString((ushort)b); // Carácter inválido, usar byte directo
+         }
+      }
+      // UTF-8: 1110xxxx 10xxxxxx 10xxxxxx (3 bytes)
+      else if((b & 0xF0) == 0xE0 && i + 2 < size)
+      {
+         uchar b2 = bytes[i+1];
+         uchar b3 = bytes[i+2];
+         if((b2 & 0xC0) == 0x80 && (b3 & 0xC0) == 0x80)
+         {
+            int codePoint = ((b & 0x0F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+            if(codePoint < 0x10000)
+            {
+               result += ShortToString((ushort)codePoint);
+            }
+            i += 2;
+         }
+         else
+         {
+            result += ShortToString((ushort)b);
+         }
+      }
+      // UTF-8: 11110xxx ... (4 bytes) - raro, pero posible
+      else if((b & 0xF8) == 0xF0 && i + 3 < size)
+      {
+         // MQL5 usa UTF-16, así que solo podemos representar hasta 0xFFFF
+         // Para caracteres > 0xFFFF, usar carácter de reemplazo
+         result += ShortToString((ushort)0xFFFD); // Replacement character
+         i += 3;
+      }
+      else
+      {
+         // Byte inválido, usar byte directo
+         result += ShortToString((ushort)b);
+      }
+   }
+   
+   return(result);
+}
+
+//+------------------------------------------------------------------+
+//| Lee todas las líneas del archivo de cola (UTF-8)                 |
 //+------------------------------------------------------------------+
 int ReadQueue(string relPath, string &lines[])
 {
-   int handle = FileOpen(relPath, FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
-   if(handle==INVALID_HANDLE)
+   // Leer archivo como binario para manejar UTF-8 correctamente
+   int handle = FileOpen(relPath, FILE_BIN|FILE_READ|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(handle == INVALID_HANDLE)
       return(0);
-   int count=0;
-   while(!FileIsEnding(handle))
+   
+   // Leer todos los bytes
+   int fileSize = (int)FileSize(handle);
+   if(fileSize <= 0)
    {
-      string ln = FileReadString(handle);
-      // FileReadString se detiene en \n; conservar tal cual
-      if(StringLen(ln)==0) { continue; }
-      ArrayResize(lines, count+1);
-      lines[count]=ln;
-      count++;
+      FileClose(handle);
+      return(0);
    }
+   
+   uchar bytes[];
+   ArrayResize(bytes, fileSize);
+   uint bytesRead = FileReadArray(handle, bytes, 0, fileSize);
    FileClose(handle);
+   
+   if(bytesRead != fileSize)
+      return(0);
+   
+   // Verificar y saltar BOM si existe
+   int bomSkip = 0;
+   // BOM UTF-8: EF BB BF
+   if(fileSize >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+      bomSkip = 3;
+   // BOM UTF-16 LE: FF FE (detectar y rechazar - archivo debe ser UTF-8)
+   else if(fileSize >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+   {
+      Print("[ERROR] ReadQueue: Archivo tiene BOM UTF-16 LE. El archivo debe estar en UTF-8 sin BOM.");
+      return(0);
+   }
+   
+   // Convertir bytes UTF-8 a líneas usando función nativa de MQL5
+   int count = 0;
+   int lineStart = bomSkip;
+   
+   while(lineStart < fileSize)
+   {
+      // Encontrar fin de línea
+      int lineEnd = lineStart;
+      bool foundEOL = false;
+      
+      for(int i = lineStart; i < fileSize; i++)
+      {
+         if(bytes[i] == 0x0A) // LF
+         {
+            lineEnd = i;
+            foundEOL = true;
+            break;
+         }
+         if(bytes[i] == 0x0D) // CR
+         {
+            lineEnd = i;
+            foundEOL = true;
+            break;
+         }
+         if(bytes[i] == 0) // Null terminator
+         {
+            lineEnd = i;
+            break;
+         }
+      }
+      
+      if(!foundEOL && lineEnd == lineStart)
+         lineEnd = fileSize; // Última línea sin salto
+      
+      // Convertir línea UTF-8 a string usando función nativa
+      if(lineEnd > lineStart)
+      {
+         uchar lineBytes[];
+         ArrayResize(lineBytes, lineEnd - lineStart);
+         ArrayCopy(lineBytes, bytes, 0, lineStart, lineEnd - lineStart);
+         string ln = UTF8ToString(lineBytes, 0, 0);
+         
+         if(StringLen(ln) > 0)
+         {
+            ArrayResize(lines, count + 1);
+            lines[count] = ln;
+            count++;
+         }
+      }
+      
+      // Avanzar al siguiente carácter después del salto de línea
+      lineStart = lineEnd;
+      if(lineStart < fileSize)
+      {
+         // Saltar CRLF o LF
+         if(bytes[lineStart] == 0x0D && lineStart + 1 < fileSize && bytes[lineStart + 1] == 0x0A)
+            lineStart += 2;
+         else if(bytes[lineStart] == 0x0A || bytes[lineStart] == 0x0D)
+            lineStart++;
+      }
+      
+      if(lineStart >= fileSize) break;
+   }
+   
    return(count);
 }
 
@@ -558,6 +717,15 @@ void OnTimer()
 
       if(ev.eventType=="OPEN")
       {
+         // Verificar si ya existe una posición abierta con este ticket (evitar duplicados)
+         ulong existingPos = FindOpenPosition(ev.symbol, ev.ticket);
+         if(existingPos > 0)
+         {
+            Print("[DEBUG] OnTimer: Ya existe posición abierta con ticket=", ev.ticket, " posTicket=", existingPos, ", saltando OPEN");
+            AppendHistory("Ya existe operacion abierta", ev, 0, 0, 0, 0, 0);
+            continue; // Saltar esta línea, no reintentar
+         }
+         
          // Obtener tick actual para precios
          MqlTick tick;
          if(!SymbolInfoTick(ev.symbol, tick))

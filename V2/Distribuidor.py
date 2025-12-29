@@ -281,7 +281,9 @@ def map_symbol_for_worker(worker_id: str, symbol: str, mappings: dict[str, dict[
     symbol_upper = symbol.upper()
     if worker_id in mappings:
         if symbol_upper in mappings[worker_id]:
-            return mappings[worker_id][symbol_upper]
+            mapped = mappings[worker_id][symbol_upper]
+            print(f"[MAPEO] Worker {worker_id}: {symbol} -> {mapped}")
+            return mapped
     return symbol  # Sin mapeo, retornar original
 
 
@@ -315,6 +317,8 @@ def append_to_queues(valid_lines: List[str], queues_dir: Path, worker_ids: List[
                 if not mapped_line.endswith("\n"):
                     mapped_line += "\n"
                 mapped_lines.append(mapped_line)
+                if original_symbol != mapped_symbol:
+                    print(f"[MAPEO] Línea procesada para worker {worker_id}: símbolo {original_symbol} -> {mapped_symbol}")
             else:
                 # Línea inválida, mantener original
                 mapped_lines.append(line if line.endswith("\n") else line + "\n")

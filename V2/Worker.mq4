@@ -270,24 +270,176 @@ double ComputeWorkerLots(string symbol, double masterLots, double csOrigin)
 }
 
 //+------------------------------------------------------------------+
-//| Lee todas las líneas del archivo de cola                         |
+//| Convierte bytes UTF-8 a string (MQL4)                             |
+//+------------------------------------------------------------------+
+string UTF8BytesToString(uchar &bytes[], int startPos = 0, int length = -1)
+{
+   string result = "";
+   int size = ArraySize(bytes);
+   if(startPos >= size) return("");
+   
+   int endPos = (length < 0) ? size : MathMin(startPos + length, size);
+   int pos = startPos;
+   
+   while(pos < endPos)
+   {
+      uchar b = bytes[pos];
+      if(b == 0) break; // Null terminator
+      
+      // ASCII (0x00-0x7F): 1 byte
+      if(b < 0x80)
+      {
+         result += ShortToString((ushort)b);
+         pos++;
+      }
+      // UTF-8 multi-byte: 2 bytes (110xxxxx 10xxxxxx)
+      else if((b & 0xE0) == 0xC0 && pos + 1 < endPos)
+      {
+         uchar b2 = bytes[pos+1];
+         if((b2 & 0xC0) == 0x80)
+         {
+            ushort code = ((ushort)(b & 0x1F) << 6) | (b2 & 0x3F);
+            result += ShortToString(code);
+            pos += 2;
+         }
+         else
+         {
+            // Byte inválido, usar byte directo
+            result += ShortToString((ushort)b);
+            pos++;
+         }
+      }
+      // UTF-8 multi-byte: 3 bytes (1110xxxx 10xxxxxx 10xxxxxx)
+      else if((b & 0xF0) == 0xE0 && pos + 2 < endPos)
+      {
+         uchar b2 = bytes[pos+1];
+         uchar b3 = bytes[pos+2];
+         if((b2 & 0xC0) == 0x80 && (b3 & 0xC0) == 0x80)
+         {
+            ushort code = ((ushort)(b & 0x0F) << 12) | ((ushort)(b2 & 0x3F) << 6) | (b3 & 0x3F);
+            result += ShortToString(code);
+            pos += 3;
+         }
+         else
+         {
+            // Byte inválido, usar byte directo
+            result += ShortToString((ushort)b);
+            pos++;
+         }
+      }
+      // UTF-8 multi-byte: 4 bytes (11110xxx ...) - raro, pero posible
+      else if((b & 0xF8) == 0xF0 && pos + 3 < endPos)
+      {
+         // MQL4 usa UTF-16, así que solo podemos representar hasta 0xFFFF
+         // Para caracteres > 0xFFFF, usar carácter de reemplazo
+         result += ShortToString((ushort)0xFFFD); // Replacement character
+         pos += 4;
+      }
+      else
+      {
+         // Byte inválido, saltar
+         result += ShortToString((ushort)b);
+         pos++;
+      }
+   }
+   return(result);
+}
+
+//+------------------------------------------------------------------+
+//| Lee todas las líneas del archivo de cola (UTF-8)                 |
 //+------------------------------------------------------------------+
 int ReadQueue(string relPath, string &lines[])
 {
-   int handle = FileOpen(relPath, FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
-   if(handle==INVALID_HANDLE)
+   // Leer archivo como binario para manejar UTF-8 correctamente
+   int handle = FileOpen(relPath, FILE_BIN|FILE_READ|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(handle == INVALID_HANDLE)
       return(0);
-   int count=0;
-   while(!FileIsEnding(handle))
+   
+   // Leer todos los bytes
+   int fileSize = (int)FileSize(handle);
+   if(fileSize <= 0)
    {
-      string ln = FileReadString(handle);
-      // FileReadString se detiene en \n; conservar tal cual
-      if(StringLen(ln)==0) { continue; }
-      ArrayResize(lines, count+1);
-      lines[count]=ln;
-      count++;
+      FileClose(handle);
+      return(0);
    }
+   
+   uchar bytes[];
+   ArrayResize(bytes, fileSize);
+   uint bytesRead = FileReadArray(handle, bytes, 0, fileSize);
    FileClose(handle);
+   
+   if(bytesRead != fileSize)
+      return(0);
+   
+   // Verificar y saltar BOM UTF-8 si existe
+   int bomSkip = 0;
+   if(fileSize >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+      bomSkip = 3;
+   
+   // Convertir bytes UTF-8 a líneas
+   int count = 0;
+   int lineStart = bomSkip;
+   
+   while(lineStart < fileSize)
+   {
+      // Encontrar fin de línea
+      int lineEnd = lineStart;
+      bool foundEOL = false;
+      
+      for(int i = lineStart; i < fileSize; i++)
+      {
+         if(bytes[i] == 0x0A) // LF
+         {
+            lineEnd = i;
+            foundEOL = true;
+            break;
+         }
+         if(bytes[i] == 0x0D) // CR
+         {
+            lineEnd = i;
+            foundEOL = true;
+            break;
+         }
+         if(bytes[i] == 0) // Null terminator
+         {
+            lineEnd = i;
+            break;
+         }
+      }
+      
+      if(!foundEOL && lineEnd == lineStart)
+         lineEnd = fileSize; // Última línea sin salto
+      
+      // Convertir línea UTF-8 a string
+      if(lineEnd > lineStart)
+      {
+         uchar lineBytes[];
+         ArrayResize(lineBytes, lineEnd - lineStart);
+         ArrayCopy(lineBytes, bytes, 0, lineStart, lineEnd - lineStart);
+         string ln = UTF8BytesToString(lineBytes);
+         
+         if(StringLen(ln) > 0)
+         {
+            ArrayResize(lines, count + 1);
+            lines[count] = ln;
+            count++;
+         }
+      }
+      
+      // Avanzar al siguiente carácter después del salto de línea
+      lineStart = lineEnd;
+      if(lineStart < fileSize)
+      {
+         // Saltar CRLF o LF
+         if(bytes[lineStart] == 0x0D && lineStart + 1 < fileSize && bytes[lineStart + 1] == 0x0A)
+            lineStart += 2;
+         else if(bytes[lineStart] == 0x0A || bytes[lineStart] == 0x0D)
+            lineStart++;
+      }
+      
+      if(lineStart >= fileSize) break;
+   }
+   
    return(count);
 }
 
@@ -493,11 +645,13 @@ void OnTimer()
       }
 
       // Asegurar símbolo
+      Print("[DEBUG] OnTimer: Intentando SymbolSelect para symbol=", ev.symbol);
       if(!SymbolSelect(ev.symbol, true))
       {
          int errCodeSym = GetLastError();
          string errDescSym = ErrorText(errCodeSym);
          string msg = "Ticket: " + ev.ticket + " - " + ev.eventType + " FALLO: SymbolSelect (" + IntegerToString(errCodeSym) + ") " + errDescSym;
+         Print("[ERROR] OnTimer: ", msg);
          Notify(msg);
          if(ev.eventType!="OPEN")
          {
@@ -509,6 +663,7 @@ void OnTimer()
          // OPEN no se reintenta
          continue;
       }
+      Print("[DEBUG] OnTimer: SymbolSelect exitoso para symbol=", ev.symbol);
 
       // Calcular lotaje (tras asegurar símbolo)
       Print("[DEBUG] OnTimer: Llamando ComputeWorkerLots con symbol=", ev.symbol, " ev.lots=", ev.lots, " ev.csOrigin=", ev.csOrigin);
@@ -517,9 +672,23 @@ void OnTimer()
 
       if(ev.eventType=="OPEN")
       {
+         Print("[DEBUG] OnTimer: Procesando evento OPEN para ticket=", ev.ticket, " symbol=", ev.symbol, " orderType=", ev.orderType);
+         
+         // Verificar si ya existe una orden abierta con este ticket (evitar duplicados)
+         int existingOrder = FindOpenOrder(ev.symbol, ev.ticket);
+         if(existingOrder >= 0)
+         {
+            Print("[DEBUG] OnTimer: Ya existe orden abierta con ticket=", ev.ticket, " orderTicket=", existingOrder, ", saltando OPEN");
+            AppendHistory("Ya existe operacion abierta", ev, 0, 0, 0, 0, 0);
+            continue; // Saltar esta línea, no reintentar
+         }
+         
          int type = (ev.orderType=="BUY" ? OP_BUY : OP_SELL);
          double price = (type==OP_BUY ? Ask : Bid);
+         Print("[DEBUG] OnTimer: Preparando OrderSend: symbol=", ev.symbol, " type=", type, " lots=", lotsWorker, " price=", price, " sl=", ev.sl, " tp=", ev.tp, " comment=", ev.ticket);
+         ResetLastError();
          int ticketNew = OrderSend(ev.symbol, type, lotsWorker, price, InpSlippage, ev.sl, ev.tp, ev.ticket, InpMagicNumber, 0, clrNONE);
+         Print("[DEBUG] OnTimer: OrderSend retornó ticketNew=", ticketNew);
          if(ticketNew<0)
          {
             // Capturar el error inmediatamente y registrar código + descripción
