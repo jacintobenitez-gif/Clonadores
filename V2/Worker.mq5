@@ -776,11 +776,6 @@ void OnTimer()
       }
       Print("[DEBUG] OnTimer: SymbolSelect exitoso para symbol=", ev.symbol);
 
-      // Calcular lotaje (tras asegurar símbolo)
-      Print("[DEBUG] OnTimer: Llamando ComputeWorkerLots con symbol=", ev.symbol, " ev.lots=", ev.lots, " ev.csOrigin=", ev.csOrigin);
-      double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots, ev.csOrigin);
-      Print("[DEBUG] OnTimer: lotsWorker calculado = ", lotsWorker);
-
       if(ev.eventType=="OPEN")
       {
          Print("[DEBUG] OnTimer: Procesando evento OPEN para ticket=", ev.ticket, " symbol=", ev.symbol, " orderType=", ev.orderType);
@@ -793,6 +788,11 @@ void OnTimer()
             AppendHistory("Ya existe operacion abierta", ev, 0, 0, 0, 0, 0);
             continue; // Saltar esta línea, no reintentar
          }
+         
+         // Calcular lotaje (solo para OPEN)
+         Print("[DEBUG] OnTimer: Llamando ComputeWorkerLots con symbol=", ev.symbol, " ev.lots=", ev.lots, " ev.csOrigin=", ev.csOrigin);
+         double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots, ev.csOrigin);
+         Print("[DEBUG] OnTimer: lotsWorker calculado = ", lotsWorker);
          
          // Obtener tick actual para precios
          MqlTick tick;
