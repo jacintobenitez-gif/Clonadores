@@ -297,6 +297,45 @@ ENUM_ORDER_TYPE_FILLING GetFillingType(string symbol)
 }
 
 //+------------------------------------------------------------------+
+//| Convierte string (UTF-16) a bytes UTF-8 (MQL5)                    |
+//+------------------------------------------------------------------+
+void StringToUTF8Bytes(string str, uchar &bytes[])
+{
+   ArrayResize(bytes, 0);
+   int len = StringLen(str);
+   
+   for(int i = 0; i < len; i++)
+   {
+      ushort ch = StringGetCharacter(str, i);
+      
+      // ASCII (0x00-0x7F): 1 byte
+      if(ch < 0x80)
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 1);
+         bytes[size] = (uchar)ch;
+      }
+      // 2 bytes UTF-8: 110xxxxx 10xxxxxx (0x80-0x7FF)
+      else if(ch < 0x800)
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 2);
+         bytes[size] = (uchar)(0xC0 | (ch >> 6));
+         bytes[size + 1] = (uchar)(0x80 | (ch & 0x3F));
+      }
+      // 3 bytes UTF-8: 1110xxxx 10xxxxxx 10xxxxxx (0x800-0xFFFF)
+      else
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 3);
+         bytes[size] = (uchar)(0xE0 | (ch >> 12));
+         bytes[size + 1] = (uchar)(0x80 | ((ch >> 6) & 0x3F));
+         bytes[size + 2] = (uchar)(0x80 | (ch & 0x3F));
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Convierte bytes UTF-8 a string (MQL5)                             |
 //+------------------------------------------------------------------+
 string UTF8ToString(uchar &bytes[], int startPos = 0, int skipBOM = 0)
@@ -478,20 +517,44 @@ int ReadQueue(string relPath, string &lines[])
 }
 
 //+------------------------------------------------------------------+
-//| Reescribe archivo de cola con líneas restantes                   |
+//| Reescribe archivo de cola con líneas restantes (UTF-8)            |
 //+------------------------------------------------------------------+
 void RewriteQueue(string relPath, string &lines[], int count)
 {
-   int handle = FileOpen(relPath, FILE_WRITE|FILE_TXT|FILE_COMMON);
+   // Si no hay líneas pendientes, eliminar el archivo completamente
+   if(count == 0)
+   {
+      FileDelete(relPath, FILE_COMMON);
+      return;
+   }
+   
+   // Abrir archivo en modo binario para escribir UTF-8 (igual que LectorOrdenes.mq4)
+   // Usar FILE_WRITE sin FILE_READ para truncar el archivo desde el inicio
+   int handle = FileOpen(relPath, FILE_BIN|FILE_WRITE|FILE_COMMON);
    if(handle==INVALID_HANDLE)
    {
       Print("No se pudo reescribir cola: ", relPath, " err=", GetLastError());
       return;
    }
+   
+   // Posicionar al inicio para sobrescribir (FILE_WRITE ya lo hace, pero por seguridad)
+   FileSeek(handle, 0, SEEK_SET);
+   
+   // Escribir cada línea en UTF-8 (igual que LectorOrdenes.mq4)
    for(int i=0;i<count;i++)
    {
-      FileWrite(handle, lines[i]);
+      // Convertir línea a UTF-8 bytes
+      uchar utf8Bytes[];
+      StringToUTF8Bytes(lines[i], utf8Bytes);
+      
+      // Escribir bytes UTF-8
+      FileWriteArray(handle, utf8Bytes);
+      
+      // Escribir salto de línea UTF-8 (\n = 0x0A)
+      uchar newline[] = {0x0A};
+      FileWriteArray(handle, newline);
    }
+   
    FileClose(handle);
 }
 
@@ -611,7 +674,7 @@ bool ParseLine(const string line, EventRec &ev)
    if(n>7)
    {
       tmp = Trim(parts[7]); StringReplace(tmp, ",", "."); ev.csOrigin = StringToDouble(tmp);
-      Print("[DEBUG] ParseLine: csOrigin leído de parts[7]='", parts[7], "' -> tmp='", tmp, "' -> csOrigin=", ev.csOrigin);
+      Print("[DEBUG] ParseLine: csOrigin leído de parts[7]='", parts[7], "' -> tmp='", tmp, "' -> csOrigin=", DoubleToString(ev.csOrigin, 2));
    }
    else 
    {
@@ -693,11 +756,13 @@ void OnTimer()
       }
 
       // Asegurar símbolo
+      Print("[DEBUG] OnTimer: Intentando SymbolSelect para symbol=", ev.symbol);
       if(!SymbolSelect(ev.symbol, true))
       {
          int errCodeSym = GetLastError();
          string errDescSym = ErrorText(errCodeSym);
          string msg = "Ticket: " + ev.ticket + " - " + ev.eventType + " FALLO: SymbolSelect (" + IntegerToString(errCodeSym) + ") " + errDescSym;
+         Print("[ERROR] OnTimer: ", msg);
          Notify(msg);
          if(ev.eventType!="OPEN")
          {
@@ -709,6 +774,7 @@ void OnTimer()
          // OPEN no se reintenta
          continue;
       }
+      Print("[DEBUG] OnTimer: SymbolSelect exitoso para symbol=", ev.symbol);
 
       // Calcular lotaje (tras asegurar símbolo)
       Print("[DEBUG] OnTimer: Llamando ComputeWorkerLots con symbol=", ev.symbol, " ev.lots=", ev.lots, " ev.csOrigin=", ev.csOrigin);
@@ -717,6 +783,8 @@ void OnTimer()
 
       if(ev.eventType=="OPEN")
       {
+         Print("[DEBUG] OnTimer: Procesando evento OPEN para ticket=", ev.ticket, " symbol=", ev.symbol, " orderType=", ev.orderType);
+         
          // Verificar si ya existe una posición abierta con este ticket (evitar duplicados)
          ulong existingPos = FindOpenPosition(ev.symbol, ev.ticket);
          if(existingPos > 0)
@@ -746,10 +814,13 @@ void OnTimer()
          bool result = false;
          // Usar precio explícito del tick (más seguro y explícito)
          double price = (ev.orderType=="BUY" ? tick.ask : tick.bid);
+         Print("[DEBUG] OnTimer: Preparando PositionOpen: symbol=", ev.symbol, " orderType=", ev.orderType, " lots=", lotsWorker, " price=", price, " sl=", ev.sl, " tp=", ev.tp, " comment=", ev.ticket);
+         ResetLastError();
          if(ev.orderType=="BUY")
             result = trade.Buy(lotsWorker, ev.symbol, price, ev.sl, ev.tp, ev.ticket);
          else
             result = trade.Sell(lotsWorker, ev.symbol, price, ev.sl, ev.tp, ev.ticket);
+         Print("[DEBUG] OnTimer: PositionOpen retornó result=", result);
          
          if(!result)
          {
@@ -767,7 +838,7 @@ void OnTimer()
          {
             string ok = "Ticket: " + ev.ticket + " - OPEN EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(lotsWorker,2) + " lots";
             Notify(ok);
-            AppendHistory("EXITOSO", ev, 0, 0, 0, 0, 0);
+            AppendHistory("EXITOSO", ev, price, TimeCurrent(), 0, 0, 0);
          }
       }
       else if(ev.eventType=="CLOSE")
