@@ -607,9 +607,9 @@ void AppendHistory(const string result, const EventRec &ev, double openPrice=0.0
 }
 
 //+------------------------------------------------------------------+
-//| Busca posición abierta por symbol + comment (=ticket)           |
+//| Busca posición abierta por comment (=ticket origen)             |
 //+------------------------------------------------------------------+
-ulong FindOpenPosition(const string symbol, const string ticket)
+ulong FindOpenPosition(const string ticket)
 {
    int total = PositionsTotal();
    for(int i=0;i<total;i++)
@@ -620,9 +620,6 @@ ulong FindOpenPosition(const string symbol, const string ticket)
       // PositionGetTicket selecciona automáticamente la posición
       // pero verificamos que la selección sea exitosa por seguridad
       if(!PositionSelectByTicket(posTicket)) continue;
-      
-      string posSymbol = PositionGetString(POSITION_SYMBOL);
-      if(posSymbol!=symbol) continue;
       
       string posComment = PositionGetString(POSITION_COMMENT);
       if(posComment!=ticket) continue;
@@ -755,33 +752,26 @@ void OnTimer()
          continue;
       }
 
-      // Asegurar símbolo
-      Print("[DEBUG] OnTimer: Intentando SymbolSelect para symbol=", ev.symbol);
-      if(!SymbolSelect(ev.symbol, true))
-      {
-         int errCodeSym = GetLastError();
-         string errDescSym = ErrorText(errCodeSym);
-         string msg = "Ticket: " + ev.ticket + " - " + ev.eventType + " FALLO: SymbolSelect (" + IntegerToString(errCodeSym) + ") " + errDescSym;
-         Print("[ERROR] OnTimer: ", msg);
-         Notify(msg);
-         if(ev.eventType!="OPEN")
-         {
-            // mantener para reintento en CLOSE/MODIFY
-            ArrayResize(remaining, remainingCount+1);
-            remaining[remainingCount]=ev.originalLine;
-            remainingCount++;
-         }
-         // OPEN no se reintenta
-         continue;
-      }
-      Print("[DEBUG] OnTimer: SymbolSelect exitoso para symbol=", ev.symbol);
-
       if(ev.eventType=="OPEN")
       {
          Print("[DEBUG] OnTimer: Procesando evento OPEN para ticket=", ev.ticket, " symbol=", ev.symbol, " orderType=", ev.orderType);
          
+         // Asegurar símbolo (solo necesario para OPEN)
+         Print("[DEBUG] OnTimer: Intentando SymbolSelect para symbol=", ev.symbol);
+         if(!SymbolSelect(ev.symbol, true))
+         {
+            int errCodeSym = GetLastError();
+            string errDescSym = ErrorText(errCodeSym);
+            string msg = "Ticket: " + ev.ticket + " - OPEN FALLO: SymbolSelect (" + IntegerToString(errCodeSym) + ") " + errDescSym;
+            Print("[ERROR] OnTimer: ", msg);
+            Notify(msg);
+            AppendHistory(msg, ev, 0, 0, 0, 0, 0);
+            continue; // OPEN no se reintenta
+         }
+         Print("[DEBUG] OnTimer: SymbolSelect exitoso para symbol=", ev.symbol);
+         
          // Verificar si ya existe una posición abierta con este ticket (evitar duplicados)
-         ulong existingPos = FindOpenPosition(ev.symbol, ev.ticket);
+         ulong existingPos = FindOpenPosition(ev.ticket);
          if(existingPos > 0)
          {
             Print("[DEBUG] OnTimer: Ya existe posición abierta con ticket=", ev.ticket, " posTicket=", existingPos, ", saltando OPEN");
@@ -843,7 +833,7 @@ void OnTimer()
       }
       else if(ev.eventType=="CLOSE")
       {
-         ulong posTicket = FindOpenPosition(ev.symbol, ev.ticket);
+         ulong posTicket = FindOpenPosition(ev.ticket);
          if(posTicket==0)
          {
             AppendHistory("No existe operacion abierta", ev, 0, 0, 0, 0, 0);
@@ -859,36 +849,14 @@ void OnTimer()
             remainingCount++;
             continue;
          }
-         ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
          double volume = PositionGetDouble(POSITION_VOLUME);
-         
-         // Obtener tick actual para precio de cierre
-         MqlTick tick;
-         if(!SymbolInfoTick(ev.symbol, tick))
-         {
-            AppendHistory(FormatLastError("ERROR: CLOSE - No tick disponible"), ev, 0, 0, 0, 0, 0);
-            ArrayResize(remaining, remainingCount+1);
-            remaining[remainingCount]=ev.originalLine;
-            remainingCount++;
-            continue;
-         }
-         
-         double price = 0.0;
-         if(posType == POSITION_TYPE_BUY)
-            price = tick.bid;
-         else
-            price = tick.ask;
          double profitBefore = PositionGetDouble(POSITION_PROFIT);
-         
-         // Configurar tipo de llenado según el símbolo
-         ENUM_ORDER_TYPE_FILLING fillingType = GetFillingType(ev.symbol);
-         trade.SetTypeFilling(fillingType);
          
          if(trade.PositionClose(posTicket))
          {
-            string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(volume,2) + " lots";
+            string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + DoubleToString(volume,2) + " lots";
             Notify(ok);
-            AppendHistory("CLOSE OK", ev, 0, 0, price, TimeCurrent(), profitBefore);
+            AppendHistory("CLOSE OK", ev, 0, 0, 0, 0, profitBefore);
             RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
          }
          else
@@ -907,7 +875,7 @@ void OnTimer()
       }
       else if(ev.eventType=="MODIFY")
       {
-         ulong posTicket = FindOpenPosition(ev.symbol, ev.ticket);
+         ulong posTicket = FindOpenPosition(ev.ticket);
          if(posTicket==0)
          {
             AppendHistory("No existe operacion abierta", ev, 0, 0, 0, 0, 0);
@@ -927,11 +895,9 @@ void OnTimer()
          double newTP = (ev.tp>0 ? ev.tp : 0.0);
          if(trade.PositionModify(posTicket, newSL, newTP))
          {
-            int symDigits = (int)SymbolInfoInteger(ev.symbol, SYMBOL_DIGITS);
-            if(symDigits<=0) symDigits = (int)_Digits;
-            string ok = "Ticket: " + ev.ticket + " - MODIFY EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(PositionGetDouble(POSITION_VOLUME),2) + " lots SL=" + DoubleToString(newSL,symDigits) + " TP=" + DoubleToString(newTP,symDigits);
+            string ok = "Ticket: " + ev.ticket + " - MODIFY EXITOSO: SL=" + DoubleToString(newSL,2) + " TP=" + DoubleToString(newTP,2);
             Notify(ok);
-            string resHist = "MODIFY OK SL=" + DoubleToString(newSL,symDigits) + " TP=" + DoubleToString(newTP,symDigits);
+            string resHist = "MODIFY OK SL=" + DoubleToString(newSL,2) + " TP=" + DoubleToString(newTP,2);
             AppendHistory(resHist, ev, 0, 0, 0, 0, 0);
             RemoveTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
          }
@@ -941,11 +907,7 @@ void OnTimer()
             int errCode = GetLastError();
             string errDesc = ErrorText(errCode);
             string errBase = "MODIFY FALLO (" + IntegerToString(errCode) + ") " + errDesc;
-
-            int symDigits2 = (int)SymbolInfoInteger(ev.symbol, SYMBOL_DIGITS);
-            if(symDigits2<=0) symDigits2 = (int)_Digits;
-            string errDetail = "ERROR: MODIFY SL=" + DoubleToString(newSL,symDigits2) + " TP=" + DoubleToString(newTP,symDigits2);
-            string err = "Ticket: " + ev.ticket + " - " + errBase + " " + errDetail;
+            string err = "Ticket: " + ev.ticket + " - " + errBase;
             if(!TicketInArray(ev.ticket, g_notifModifyTickets, g_notifModifyCount))
             {
                Notify(err);

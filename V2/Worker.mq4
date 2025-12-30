@@ -510,16 +510,14 @@ void AppendHistory(const string result, const EventRec &ev, double openPrice=0.0
 }
 
 //+------------------------------------------------------------------+
-//| Busca orden abierta por symbol + comment (=ticket)               |
+//| Busca orden abierta por comment (=ticket origen)                 |
 //+------------------------------------------------------------------+
-int FindOpenOrder(const string symbol, const string ticket)
+int FindOpenOrder(const string ticket)
 {
    int total=OrdersTotal();
    for(int i=0;i<total;i++)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
-         continue;
-      if(OrderSymbol()!=symbol)
          continue;
       if(OrderComment()!=ticket)
          continue;
@@ -644,44 +642,37 @@ void OnTimer()
          continue;
       }
 
-      // Asegurar símbolo
-      Print("[DEBUG] OnTimer: Intentando SymbolSelect para symbol=", ev.symbol);
-      if(!SymbolSelect(ev.symbol, true))
-      {
-         int errCodeSym = GetLastError();
-         string errDescSym = ErrorText(errCodeSym);
-         string msg = "Ticket: " + ev.ticket + " - " + ev.eventType + " FALLO: SymbolSelect (" + IntegerToString(errCodeSym) + ") " + errDescSym;
-         Print("[ERROR] OnTimer: ", msg);
-         Notify(msg);
-         if(ev.eventType!="OPEN")
-         {
-            // mantener para reintento en CLOSE/MODIFY
-            ArrayResize(remaining, remainingCount+1);
-            remaining[remainingCount]=ev.originalLine;
-            remainingCount++;
-         }
-         // OPEN no se reintenta
-         continue;
-      }
-      Print("[DEBUG] OnTimer: SymbolSelect exitoso para symbol=", ev.symbol);
-
-      // Calcular lotaje (tras asegurar símbolo)
-      Print("[DEBUG] OnTimer: Llamando ComputeWorkerLots con symbol=", ev.symbol, " ev.lots=", ev.lots, " ev.csOrigin=", ev.csOrigin);
-      double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots, ev.csOrigin);
-      Print("[DEBUG] OnTimer: lotsWorker calculado = ", lotsWorker);
-
       if(ev.eventType=="OPEN")
       {
          Print("[DEBUG] OnTimer: Procesando evento OPEN para ticket=", ev.ticket, " symbol=", ev.symbol, " orderType=", ev.orderType);
          
+         // Asegurar símbolo (solo necesario para OPEN)
+         Print("[DEBUG] OnTimer: Intentando SymbolSelect para symbol=", ev.symbol);
+         if(!SymbolSelect(ev.symbol, true))
+         {
+            int errCodeSym = GetLastError();
+            string errDescSym = ErrorText(errCodeSym);
+            string msg = "Ticket: " + ev.ticket + " - OPEN FALLO: SymbolSelect (" + IntegerToString(errCodeSym) + ") " + errDescSym;
+            Print("[ERROR] OnTimer: ", msg);
+            Notify(msg);
+            AppendHistory(msg, ev, 0, 0, 0, 0, 0);
+            continue; // OPEN no se reintenta
+         }
+         Print("[DEBUG] OnTimer: SymbolSelect exitoso para symbol=", ev.symbol);
+         
          // Verificar si ya existe una orden abierta con este ticket (evitar duplicados)
-         int existingOrder = FindOpenOrder(ev.symbol, ev.ticket);
+         int existingOrder = FindOpenOrder(ev.ticket);
          if(existingOrder >= 0)
          {
             Print("[DEBUG] OnTimer: Ya existe orden abierta con ticket=", ev.ticket, " orderTicket=", existingOrder, ", saltando OPEN");
             AppendHistory("Ya existe operacion abierta", ev, 0, 0, 0, 0, 0);
             continue; // Saltar esta línea, no reintentar
          }
+         
+         // Calcular lotaje (solo para OPEN)
+         Print("[DEBUG] OnTimer: Llamando ComputeWorkerLots con symbol=", ev.symbol, " ev.lots=", ev.lots, " ev.csOrigin=", ev.csOrigin);
+         double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots, ev.csOrigin);
+         Print("[DEBUG] OnTimer: lotsWorker calculado = ", lotsWorker);
          
          int type = (ev.orderType=="BUY" ? OP_BUY : OP_SELL);
          double price = (type==OP_BUY ? Ask : Bid);
@@ -710,7 +701,7 @@ void OnTimer()
       }
       else if(ev.eventType=="CLOSE")
       {
-         int orderTicket = FindOpenOrder(ev.symbol, ev.ticket);
+         int orderTicket = FindOpenOrder(ev.ticket);
          if(orderTicket<0)
          {
             AppendHistory("No existe operacion abierta", ev, 0, 0, 0, 0, 0);
@@ -732,7 +723,7 @@ void OnTimer()
          double profitBefore = OrderProfit();
          if(OrderClose(orderTicket, volume, price, InpSlippage, clrNONE))
          {
-            string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(volume,2) + " lots";
+            string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + DoubleToString(volume,2) + " lots";
             Notify(ok);
             AppendHistory("CLOSE OK", ev, 0, 0, price, TimeCurrent(), profitBefore);
             RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
@@ -753,7 +744,7 @@ void OnTimer()
       }
       else if(ev.eventType=="MODIFY")
       {
-         int orderTicket = FindOpenOrder(ev.symbol, ev.ticket);
+         int orderTicket = FindOpenOrder(ev.ticket);
          if(orderTicket<0)
          {
             AppendHistory("No existe operacion abierta", ev, 0, 0, 0, 0, 0);
@@ -773,12 +764,10 @@ void OnTimer()
          double newTP = (ev.tp>0 ? ev.tp : 0.0);
          if(OrderModify(orderTicket, OrderOpenPrice(), newSL, newTP, OrderExpiration(), clrNONE))
          {
-            int symDigits = (int)MarketInfo(ev.symbol, MODE_DIGITS);
-            if(symDigits<=0) symDigits=Digits;
-            string ok = "Ticket: " + ev.ticket + " - MODIFY EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(OrderLots(),2) + " lots SL=" + DoubleToString(newSL,symDigits) + " TP=" + DoubleToString(newTP,symDigits);
+            string ok = "Ticket: " + ev.ticket + " - MODIFY EXITOSO: SL=" + DoubleToString(newSL,2) + " TP=" + DoubleToString(newTP,2);
             Notify(ok);
-         string resHist = "MODIFY OK SL=" + DoubleToString(newSL,symDigits) + " TP=" + DoubleToString(newTP,symDigits);
-         AppendHistory(resHist, ev, 0, 0, 0, 0, 0);
+            string resHist = "MODIFY OK SL=" + DoubleToString(newSL,2) + " TP=" + DoubleToString(newTP,2);
+            AppendHistory(resHist, ev, 0, 0, 0, 0, 0);
             RemoveTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
          }
          else
@@ -787,18 +776,14 @@ void OnTimer()
             int errCode = GetLastError();
             string errDesc = ErrorText(errCode);
             string errBase = "MODIFY FALLO (" + IntegerToString(errCode) + ") " + errDesc;
-
-            int symDigits2 = (int)MarketInfo(ev.symbol, MODE_DIGITS);
-            if(symDigits2<=0) symDigits2=Digits;
-            string errDetail = "ERROR: MODIFY SL=" + DoubleToString(newSL,symDigits2) + " TP=" + DoubleToString(newTP,symDigits2);
-            string err = "Ticket: " + ev.ticket + " - " + errBase + " " + errDetail;
+            string err = "Ticket: " + ev.ticket + " - " + errBase;
             if(!TicketInArray(ev.ticket, g_notifModifyTickets, g_notifModifyCount))
             {
                Notify(err);
                AddTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
             }
             // mantener para reintento
-         AppendHistory(err, ev, 0, 0, 0, 0, 0);
+            AppendHistory(err, ev, 0, 0, 0, 0, 0);
             ArrayResize(remaining, remainingCount+1);
             remaining[remainingCount]=ev.originalLine;
             remainingCount++;

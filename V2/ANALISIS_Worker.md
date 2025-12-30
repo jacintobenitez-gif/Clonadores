@@ -76,7 +76,7 @@ Bucle principal (OnTimer)
 4) Para cada evento:
    - Normalizar `event_type` (OPEN/CLOSE/MODIFY) y `order_type` (BUY/SELL) a mayúsculas.
    - Normalizar `symbol` básicamente: eliminar espacios y convertir a mayúsculas (el símbolo ya viene mapeado del Distribuidor).
-- Calcular `lots_worker` (con escalado por contract size):
+   - **Calcular `lots_worker` SOLO para eventos OPEN** (con escalado por contract size):
      - `cs_dest = MarketInfo(symbol, MODE_TRADECONTRACTSIZE)` (si ≤0 usar 1.0).
      - Si la línea trae `contract_size` (>0), `ratio = cs_origin / cs_dest`, si no, ratio=1.
      - Base lote:
@@ -86,12 +86,15 @@ Bucle principal (OnTimer)
    - `comment` = ticket maestro (string).
    - OPEN:
      - Asegurar símbolo en MarketWatch (`SymbolSelect(symbol, true)`).
+     - Calcular `lots_worker` usando `ComputeWorkerLots()`.
      - Precio: `Ask` si BUY, `Bid` si SELL.
      - `OrderSend(OP_BUY/OP_SELL, lots_worker, price, Slippage, sl, tp, comment, MagicNumber)` sobre el símbolo recibido.
      - Si éxito: histórico `resultado=EXITOSO`, set `open_price`, `open_time=TimeCurrent()`, `sl`, `tp`.
      - Si fallo: histórico `resultado=ERROR: <código/texto>`, **no se reintenta** (se elimina de la cola).
    - CLOSE:
-     - Buscar orden/posición abierta con `OrderComment()==ticket` y símbolo coincide (usando el símbolo recibido).
+     - **Buscar orden/posición abierta SOLO por `OrderComment()==ticket`** (el ticket origen es la clave única).
+     - **NO se verifica el símbolo** para encontrar la posición (el símbolo puede diferir entre OPEN y CLOSE).
+     - **NO se requiere `SymbolSelect()`** antes de cerrar.
      - Si no existe: histórico `resultado=No existe operacion abierta`; eliminar línea.
      - Si existe:
        - Orden contraria (BUY→SELL, SELL→BUY) por el mismo volumen; precio Bid/Ask.
@@ -99,7 +102,9 @@ Bucle principal (OnTimer)
        - Si éxito: histórico `resultado=CLOSE OK`, `close_price`, `close_time`, `profit=OrderProfit()`.
        - Si fallo: histórico `resultado=ERROR: ...`, mantener línea para reintento.
   - MODIFY:
-     - Buscar posición abierta (mismo criterio, símbolo recibido).
+     - **Buscar posición abierta SOLO por `OrderComment()==ticket`** (el ticket origen es la clave única).
+     - **NO se verifica el símbolo** para encontrar la posición.
+     - **NO se requiere `SymbolSelect()`** antes de modificar.
      - Si no existe: histórico `resultado=No existe operacion abierta`; eliminar línea.
      - Si existe: `OrderModify` con nuevos `sl`/`tp` (0 si no vienen).
        - Si éxito: histórico `resultado=MODIFY OK SL=<...> TP=<...>` (sl/tp nuevos).
@@ -125,6 +130,15 @@ Manejo de errores / supuestos
 - Si fallo de parseo: se puede registrar en histórico como `ERROR PARSE` y descartar la línea.
 - Si el archivo no existe o está vacío: no hace nada en el ciclo.
 - Se asume UTF-8 sin BOM; si hay BOM, se ignora al inicio.
+
+Búsqueda de posiciones/órdenes abiertas
+---------------------------------------
+- **CLAVE ÚNICA**: El ticket origen (guardado en `OrderComment()` o `PositionComment()`) es la única clave para identificar operaciones.
+- **NO se verifica el símbolo** al buscar posiciones en CLOSE/MODIFY porque:
+  - El símbolo puede cambiar entre OPEN y CLOSE (por mapeos diferentes, cambios de configuración, etc.).
+  - El ticket origen es único e inmutable, garantizando la identificación correcta.
+- **OPEN**: Requiere el símbolo para `SymbolSelect()` y `OrderSend()`/`PositionOpen()`.
+- **CLOSE/MODIFY**: Solo requieren el ticket; no necesitan `SymbolSelect()` ni verificación de símbolo.
 
 Decisiones abiertas (si se requieren ajustes)
 ---------------------------------------------
