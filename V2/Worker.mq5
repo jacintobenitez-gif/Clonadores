@@ -748,7 +748,10 @@ void OnTimer()
       EventRec ev;
       if(!ParseLine(lines[i], ev))
       {
-         // línea inválida: descartar
+         // línea inválida: añadir a remaining para reintento
+         ArrayResize(remaining, remainingCount+1);
+         remaining[remainingCount]=lines[i];
+         remainingCount++;
          continue;
       }
 
@@ -851,12 +854,26 @@ void OnTimer()
          }
          double volume = PositionGetDouble(POSITION_VOLUME);
          double profitBefore = PositionGetDouble(POSITION_PROFIT);
+         ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         string posSymbol = PositionGetString(POSITION_SYMBOL);
+         
+         // Obtener tick actual para precio de cierre (usando símbolo de la posición)
+         MqlTick tick;
+         double closePrice = 0.0;
+         if(SymbolInfoTick(posSymbol, tick))
+         {
+            if(posType == POSITION_TYPE_BUY)
+               closePrice = tick.bid;
+            else
+               closePrice = tick.ask;
+         }
+         datetime closeTime = TimeCurrent();
          
          if(trade.PositionClose(posTicket))
          {
             string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + DoubleToString(volume,2) + " lots";
             Notify(ok);
-            AppendHistory("CLOSE OK", ev, 0, 0, 0, 0, profitBefore);
+            AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore);
             RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
          }
          else
@@ -867,6 +884,8 @@ void OnTimer()
                Notify(err);
                AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
             }
+            // Registrar en histórico con los campos CLOSE obtenidos
+            AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore);
             // mantener para reintento
             ArrayResize(remaining, remainingCount+1);
             remaining[remainingCount]=ev.originalLine;

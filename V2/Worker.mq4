@@ -638,7 +638,10 @@ void OnTimer()
       EventRec ev;
       if(!ParseLine(lines[i], ev))
       {
-         // línea inválida: descartar
+         // línea inválida: añadir a remaining para reintento
+         ArrayResize(remaining, remainingCount+1);
+         remaining[remainingCount]=lines[i];
+         remainingCount++;
          continue;
       }
 
@@ -719,13 +722,14 @@ void OnTimer()
          }
          int type = OrderType();
          double volume = OrderLots();
-         double price = (type==OP_BUY ? Bid : Ask);
+         double closePrice = (type==OP_BUY ? Bid : Ask);
          double profitBefore = OrderProfit();
-         if(OrderClose(orderTicket, volume, price, InpSlippage, clrNONE))
+         datetime closeTime = TimeCurrent();
+         if(OrderClose(orderTicket, volume, closePrice, InpSlippage, clrNONE))
          {
             string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + DoubleToString(volume,2) + " lots";
             Notify(ok);
-            AppendHistory("CLOSE OK", ev, 0, 0, price, TimeCurrent(), profitBefore);
+            AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore);
             RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
          }
          else
@@ -736,6 +740,8 @@ void OnTimer()
                Notify(err);
                AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
             }
+            // Registrar en histórico con los campos CLOSE obtenidos
+            AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore);
             // mantener para reintento
             ArrayResize(remaining, remainingCount+1);
             remaining[remainingCount]=ev.originalLine;
