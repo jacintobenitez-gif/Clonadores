@@ -521,16 +521,33 @@ void AppendHistory(const string result, const EventRec &ev, double openPrice=0.0
 //+------------------------------------------------------------------+
 int FindOpenOrder(const string ticket)
 {
-   int total=OrdersTotal();
-   for(int i=0;i<total;i++)
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
          continue;
-      if(OrderComment()!=ticket)
+      string orderComment = OrderComment();
+      orderComment = Trim(orderComment);
+      string ticketNormalized = Trim(ticket);
+      if(orderComment == ticketNormalized)
+         return OrderTicket();
+   }
+   return(-1);
+}
+
+//+------------------------------------------------------------------+
+//| Busca orden en historial por comment (=ticket origen)            |
+//+------------------------------------------------------------------+
+int FindOrderInHistory(const string ticket)
+{
+   for(int i = OrdersHistoryTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY))
          continue;
-      if(InpMagicNumber>0 && OrderMagicNumber()!=InpMagicNumber)
-         continue;
-      return(OrderTicket());
+      string orderComment = OrderComment();
+      orderComment = Trim(orderComment);
+      string ticketNormalized = Trim(ticket);
+      if(orderComment == ticketNormalized)
+         return OrderTicket();
    }
    return(-1);
 }
@@ -711,48 +728,58 @@ void OnTimer()
       }
       else if(ev.eventType=="CLOSE")
       {
+         // Paso 1: Buscar en órdenes abiertas (MODE_TRADES)
          int orderTicket = FindOpenOrder(ev.ticket);
-         if(orderTicket<0)
+         if(orderTicket >= 0)
          {
-            AppendHistory("No existe operacion abierta", ev, 0, 0, 0, 0, 0);
-            RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
-            continue;
-         }
-         if(!OrderSelect(orderTicket, SELECT_BY_TICKET))
-         {
-            AppendHistory(FormatLastError("ERROR: CLOSE select"), ev, 0, 0, 0, 0, 0);
-            // mantener para reintento
-            ArrayResize(remaining, remainingCount+1);
-            remaining[remainingCount]=ev.originalLine;
-            remainingCount++;
-            continue;
-         }
-         int type = OrderType();
-         double volume = OrderLots();
-         double closePrice = (type==OP_BUY ? Bid : Ask);
-         double profitBefore = OrderProfit();
-         datetime closeTime = TimeCurrent();
-         if(OrderClose(orderTicket, volume, closePrice, InpSlippage, clrNONE))
-         {
-            string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + DoubleToString(volume,2) + " lots";
-            Notify(ok);
-            AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore);
-            RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+            // Encontrada en abiertas: seleccionar y cerrar
+            if(!OrderSelect(orderTicket, SELECT_BY_TICKET))
+            {
+               AppendHistory(FormatLastError("ERROR: CLOSE select"), ev, 0, 0, 0, 0, 0);
+               // mantener para reintento
+               ArrayResize(remaining, remainingCount+1);
+               remaining[remainingCount]=ev.originalLine;
+               remainingCount++;
+               continue;
+            }
+            int type = OrderType();
+            double volume = OrderLots();
+            double closePrice = (type==OP_BUY ? Bid : Ask);
+            double profitBefore = OrderProfit();
+            datetime closeTime = TimeCurrent();
+            if(OrderClose(orderTicket, volume, closePrice, InpSlippage, clrNONE))
+            {
+               string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + DoubleToString(volume,2) + " lots";
+               Notify(ok);
+               AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore);
+               RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+            }
+            else
+            {
+               string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO");
+               if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
+               {
+                  Notify(err);
+                  AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+               }
+               AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore);
+               // mantener para reintento
+               ArrayResize(remaining, remainingCount+1);
+               remaining[remainingCount]=ev.originalLine;
+               remainingCount++;
+            }
          }
          else
          {
-            string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO");
-            if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
+            // Paso 2: No encontrada en abiertas, buscar en historial (MODE_HISTORY)
+            int historyTicket = FindOrderInHistory(ev.ticket);
+            if(historyTicket >= 0)
             {
-               Notify(err);
-               AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+               // Encontrada en historial: ya está cerrada
+               AppendHistory("Operacion ya esta cerrada", ev, 0, 0, 0, 0, 0);
+               RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
             }
-            // Registrar en histórico con los campos CLOSE obtenidos
-            AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore);
-            // mantener para reintento
-            ArrayResize(remaining, remainingCount+1);
-            remaining[remainingCount]=ev.originalLine;
-            remainingCount++;
+            // Si no se encuentra en ningún lado, no se hace nada (se descarta)
          }
       }
       else if(ev.eventType=="MODIFY")

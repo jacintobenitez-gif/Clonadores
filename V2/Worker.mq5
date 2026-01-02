@@ -618,8 +618,7 @@ void AppendHistory(const string result, const EventRec &ev, double openPrice=0.0
 //+------------------------------------------------------------------+
 ulong FindOpenPosition(const string ticket)
 {
-   int total = PositionsTotal();
-   for(int i=0;i<total;i++)
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong posTicket = PositionGetTicket(i);
       if(posTicket==0) continue;
@@ -629,7 +628,9 @@ ulong FindOpenPosition(const string ticket)
       if(!PositionSelectByTicket(posTicket)) continue;
       
       string posComment = PositionGetString(POSITION_COMMENT);
-      if(posComment!=ticket) continue;
+      posComment = Trim(posComment);  // Normalizar espacios en blanco
+      string ticketNormalized = Trim(ticket);  // Normalizar también el ticket por seguridad
+      if(posComment!=ticketNormalized) continue;
       
       if(InpMagicNumber>0)
       {
@@ -637,6 +638,38 @@ ulong FindOpenPosition(const string ticket)
          if(posMagic!=InpMagicNumber) continue;
       }
       return(posTicket);
+   }
+   return(0);
+}
+
+//+------------------------------------------------------------------+
+//| Busca posición en historial por comment (=ticket origen)        |
+//+------------------------------------------------------------------+
+ulong FindPositionInHistory(const string ticket)
+{
+   // Seleccionar historial desde hace 30 días hasta ahora
+   datetime endTime = TimeCurrent();
+   datetime startTime = endTime - 30*24*3600;
+   if(!HistorySelect(startTime, endTime))
+      return(0);
+   
+   string ticketNormalized = Trim(ticket);
+   
+   // Buscar desde el final hacia atrás (más recientes primero)
+   for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      
+      // Obtener el comment del deal
+      string dealComment = HistoryDealGetString(dealTicket, DEAL_COMMENT);
+      dealComment = Trim(dealComment);
+      
+      if(dealComment == ticketNormalized)
+      {
+         // Encontrado: la posición ya está cerrada
+         return(dealTicket); // Retornar dealTicket como indicador de que existe
+      }
    }
    return(0);
 }
@@ -843,60 +876,70 @@ void OnTimer()
       }
       else if(ev.eventType=="CLOSE")
       {
+         // Paso 1: Buscar en posiciones abiertas
          ulong posTicket = FindOpenPosition(ev.ticket);
-         if(posTicket==0)
+         if(posTicket > 0)
          {
-            AppendHistory("No existe operacion abierta", ev, 0, 0, 0, 0, 0);
-            RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
-            continue;
-         }
-         if(!PositionSelectByTicket(posTicket))
-         {
-            AppendHistory(FormatLastError("ERROR: CLOSE select"), ev, 0, 0, 0, 0, 0);
-            // mantener para reintento
-            ArrayResize(remaining, remainingCount+1);
-            remaining[remainingCount]=ev.originalLine;
-            remainingCount++;
-            continue;
-         }
-         double volume = PositionGetDouble(POSITION_VOLUME);
-         double profitBefore = PositionGetDouble(POSITION_PROFIT);
-         ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         string posSymbol = PositionGetString(POSITION_SYMBOL);
-         
-         // Obtener tick actual para precio de cierre (usando símbolo de la posición)
-         MqlTick tick;
-         double closePrice = 0.0;
-         if(SymbolInfoTick(posSymbol, tick))
-         {
-            if(posType == POSITION_TYPE_BUY)
-               closePrice = tick.bid;
+            // Encontrada en abiertas: seleccionar y cerrar
+            if(!PositionSelectByTicket(posTicket))
+            {
+               AppendHistory(FormatLastError("ERROR: CLOSE select"), ev, 0, 0, 0, 0, 0);
+               // mantener para reintento
+               ArrayResize(remaining, remainingCount+1);
+               remaining[remainingCount]=ev.originalLine;
+               remainingCount++;
+               continue;
+            }
+            double volume = PositionGetDouble(POSITION_VOLUME);
+            double profitBefore = PositionGetDouble(POSITION_PROFIT);
+            ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+            string posSymbol = PositionGetString(POSITION_SYMBOL);
+            
+            // Obtener tick actual para precio de cierre (usando símbolo de la posición)
+            MqlTick tick;
+            double closePrice = 0.0;
+            if(SymbolInfoTick(posSymbol, tick))
+            {
+               if(posType == POSITION_TYPE_BUY)
+                  closePrice = tick.bid;
+               else
+                  closePrice = tick.ask;
+            }
+            datetime closeTime = TimeCurrent();
+            
+            if(trade.PositionClose(posTicket))
+            {
+               string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + DoubleToString(volume,2) + " lots";
+               Notify(ok);
+               AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore);
+               RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+            }
             else
-               closePrice = tick.ask;
-         }
-         datetime closeTime = TimeCurrent();
-         
-         if(trade.PositionClose(posTicket))
-         {
-            string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + DoubleToString(volume,2) + " lots";
-            Notify(ok);
-            AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore);
-            RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+            {
+               string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO");
+               if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
+               {
+                  Notify(err);
+                  AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+               }
+               AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore);
+               // mantener para reintento
+               ArrayResize(remaining, remainingCount+1);
+               remaining[remainingCount]=ev.originalLine;
+               remainingCount++;
+            }
          }
          else
          {
-            string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO");
-            if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
+            // Paso 2: No encontrada en abiertas, buscar en historial
+            ulong historyTicket = FindPositionInHistory(ev.ticket);
+            if(historyTicket > 0)
             {
-               Notify(err);
-               AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+               // Encontrada en historial: ya está cerrada
+               AppendHistory("Operacion ya esta cerrada", ev, 0, 0, 0, 0, 0);
+               RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
             }
-            // Registrar en histórico con los campos CLOSE obtenidos
-            AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore);
-            // mantener para reintento
-            ArrayResize(remaining, remainingCount+1);
-            remaining[remainingCount]=ev.originalLine;
-            remainingCount++;
+            // Si no se encuentra en ningún lado, no se hace nada (se descarta)
          }
       }
       else if(ev.eventType=="MODIFY")
