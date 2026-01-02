@@ -264,9 +264,12 @@ double ComputeWorkerLots(string symbol, double masterLots, double csOrigin)
       }
       Print("[DEBUG] ComputeWorkerLots: ratio = csOrigin(", csOrigin, ") / csDest(", csDest, ") = ", ratio);
       
-      // 3. Aplicar ratio a FixedLots
-      finalLots = InpFixedLots * ratio;
-      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots = InpFixedLots(", InpFixedLots, ") * ratio(", ratio, ") = ", finalLots);
+      // 3. Normalizar lotes del master
+      double normalizedLots = masterLots * ratio;
+      Print("[DEBUG] ComputeWorkerLots: normalizedLots = masterLots(", masterLots, ") * ratio(", ratio, ") = ", normalizedLots);
+      
+      finalLots = normalizedLots;
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots = normalizedLots(", normalizedLots, ") sin multiplicador");
    }
    
    // 4. Ajustar a min/max/step del símbolo
