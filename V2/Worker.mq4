@@ -677,8 +677,20 @@ void OnTimer()
          double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots, ev.csOrigin);
          Print("[DEBUG] OnTimer: lotsWorker calculado = ", lotsWorker);
          
+         // Obtener precio actual (validar que Ask/Bid son válidos)
          int type = (ev.orderType=="BUY" ? OP_BUY : OP_SELL);
          double price = (type==OP_BUY ? Ask : Bid);
+         if(price <= 0.0)
+         {
+            int errCode = GetLastError();
+            string errDesc = ErrorText(errCode);
+            string errBase = "ERROR: OPEN (" + IntegerToString(errCode) + ") " + errDesc;
+            string err = "Ticket: " + ev.ticket + " - " + errBase;
+            Notify(err);
+            AppendHistory(errBase, ev, 0, 0, 0, 0, 0);
+            continue;
+         }
+         
          Print("[DEBUG] OnTimer: Preparando OrderSend: symbol=", ev.symbol, " type=", type, " lots=", lotsWorker, " price=", price, " sl=", ev.sl, " tp=", ev.tp, " comment=", ev.ticket);
          ResetLastError();
          int ticketNew = OrderSend(ev.symbol, type, lotsWorker, price, InpSlippage, ev.sl, ev.tp, ev.ticket, InpMagicNumber, 0, clrNONE);
@@ -699,7 +711,7 @@ void OnTimer()
          {
             string ok = "Ticket: " + ev.ticket + " - OPEN EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(lotsWorker,2) + " lots";
             Notify(ok);
-            AppendHistory("EXITOSO", ev, 0, 0, 0, 0, 0);
+            AppendHistory("EXITOSO", ev, price, TimeCurrent(), 0, 0, 0);
          }
       }
       else if(ev.eventType=="CLOSE")
@@ -720,6 +732,16 @@ void OnTimer()
             remainingCount++;
             continue;
          }
+         
+         // Obtener símbolo de la orden y asegurar que está seleccionado
+         string orderSymbol = OrderSymbol();
+         if(orderSymbol != ev.symbol)
+         {
+            // El símbolo de la orden puede ser diferente al del evento (por mapeo)
+            // Asegurar que el símbolo de la orden está seleccionado para obtener precios correctos
+            SymbolSelect(orderSymbol, true);
+         }
+         
          int type = OrderType();
          double volume = OrderLots();
          double closePrice = (type==OP_BUY ? Bid : Ask);
