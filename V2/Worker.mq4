@@ -232,37 +232,44 @@ double ComputeWorkerLots(string symbol, double masterLots, double csOrigin)
    Print("[DEBUG] ComputeWorkerLots: symbol=", symbol, " masterLots=", masterLots, " csOrigin=", csOrigin);
    Print("[DEBUG] ComputeWorkerLots: InpFondeo=", InpFondeo, " InpLotMultiplier=", InpLotMultiplier);
    
-   // 1. Calcular contract_size del destino
-   double csDest = GetContractSize(symbol);
-   Print("[DEBUG] ComputeWorkerLots: csDest calculado=", csDest);
-   if(csDest<=0.0) 
-   {
-      csDest = 1.0;
-      Print("[DEBUG] ComputeWorkerLots: csDest <= 0, ajustado a 1.0");
-   }
-   
-   // 2. Calcular ratio de normalización (csOrigin siempre existe)
-   double ratio = csOrigin / csDest;
-   Print("[DEBUG] ComputeWorkerLots: ratio = csOrigin(", csOrigin, ") / csDest(", csDest, ") = ", ratio);
-   
-   // 3. Normalizar lotes del master
-   double normalizedLots = masterLots * ratio;
-   Print("[DEBUG] ComputeWorkerLots: normalizedLots = masterLots(", masterLots, ") * ratio(", ratio, ") = ", normalizedLots);
-   
-   // 4. Aplicar multiplicador SOLO si es cuenta de fondeo
    double finalLots;
+   
+   // Si es cuenta de fondeo: multiplicar directamente sin normalización por contract size
    if(InpFondeo)
    {
-      finalLots = normalizedLots * InpLotMultiplier;
-      Print("[DEBUG] ComputeWorkerLots: InpFondeo=true, finalLots = normalizedLots(", normalizedLots, ") * InpLotMultiplier(", InpLotMultiplier, ") = ", finalLots);
+      finalLots = masterLots * InpLotMultiplier;
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=true, finalLots = masterLots(", masterLots, ") * InpLotMultiplier(", InpLotMultiplier, ") = ", finalLots);
    }
    else
    {
-      finalLots = normalizedLots;
-      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots = normalizedLots(", normalizedLots, ") sin multiplicador");
+      // Si NO es cuenta de fondeo: aplicar normalización por contract size y usar FixedLots
+      // 1. Calcular contract_size del destino
+      double csDest = GetContractSize(symbol);
+      Print("[DEBUG] ComputeWorkerLots: csDest calculado=", csDest);
+      if(csDest<=0.0) 
+      {
+         csDest = 1.0;
+         Print("[DEBUG] ComputeWorkerLots: csDest <= 0, ajustado a 1.0");
+      }
+      
+      // 2. Calcular ratio de normalización
+      double ratio = 1.0;
+      if(csOrigin > 0.0)
+      {
+         ratio = csOrigin / csDest;
+      }
+      else
+      {
+         Print("[DEBUG] ComputeWorkerLots: csOrigin <= 0, usando ratio=1.0 (sin normalización por contract size)");
+      }
+      Print("[DEBUG] ComputeWorkerLots: ratio = csOrigin(", csOrigin, ") / csDest(", csDest, ") = ", ratio);
+      
+      // 3. Aplicar ratio a FixedLots
+      finalLots = InpFixedLots * ratio;
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots = InpFixedLots(", InpFixedLots, ") * ratio(", ratio, ") = ", finalLots);
    }
    
-   // 5. Ajustar a min/max/step del símbolo
+   // 4. Ajustar a min/max/step del símbolo
    double adjustedLots = AdjustFixedLots(symbol, finalLots);
    Print("[DEBUG] ComputeWorkerLots: adjustedLots después de AdjustFixedLots = ", adjustedLots);
    
@@ -677,20 +684,8 @@ void OnTimer()
          double lotsWorker = ComputeWorkerLots(ev.symbol, ev.lots, ev.csOrigin);
          Print("[DEBUG] OnTimer: lotsWorker calculado = ", lotsWorker);
          
-         // Obtener precio actual (validar que Ask/Bid son válidos)
          int type = (ev.orderType=="BUY" ? OP_BUY : OP_SELL);
          double price = (type==OP_BUY ? Ask : Bid);
-         if(price <= 0.0)
-         {
-            int errCode = GetLastError();
-            string errDesc = ErrorText(errCode);
-            string errBase = "ERROR: OPEN (" + IntegerToString(errCode) + ") " + errDesc;
-            string err = "Ticket: " + ev.ticket + " - " + errBase;
-            Notify(err);
-            AppendHistory(errBase, ev, 0, 0, 0, 0, 0);
-            continue;
-         }
-         
          Print("[DEBUG] OnTimer: Preparando OrderSend: symbol=", ev.symbol, " type=", type, " lots=", lotsWorker, " price=", price, " sl=", ev.sl, " tp=", ev.tp, " comment=", ev.ticket);
          ResetLastError();
          int ticketNew = OrderSend(ev.symbol, type, lotsWorker, price, InpSlippage, ev.sl, ev.tp, ev.ticket, InpMagicNumber, 0, clrNONE);
@@ -711,7 +706,7 @@ void OnTimer()
          {
             string ok = "Ticket: " + ev.ticket + " - OPEN EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(lotsWorker,2) + " lots";
             Notify(ok);
-            AppendHistory("EXITOSO", ev, price, TimeCurrent(), 0, 0, 0);
+            AppendHistory("EXITOSO", ev, 0, 0, 0, 0, 0);
          }
       }
       else if(ev.eventType=="CLOSE")
@@ -732,16 +727,6 @@ void OnTimer()
             remainingCount++;
             continue;
          }
-         
-         // Obtener símbolo de la orden y asegurar que está seleccionado
-         string orderSymbol = OrderSymbol();
-         if(orderSymbol != ev.symbol)
-         {
-            // El símbolo de la orden puede ser diferente al del evento (por mapeo)
-            // Asegurar que el símbolo de la orden está seleccionado para obtener precios correctos
-            SymbolSelect(orderSymbol, true);
-         }
-         
          int type = OrderType();
          double volume = OrderLots();
          double closePrice = (type==OP_BUY ? Bid : Ask);

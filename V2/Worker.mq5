@@ -239,37 +239,44 @@ double ComputeWorkerLots(string symbol, double masterLots, double csOrigin)
    Print("[DEBUG] ComputeWorkerLots: symbol=", symbol, " masterLots=", masterLots, " csOrigin=", csOrigin);
    Print("[DEBUG] ComputeWorkerLots: InpFondeo=", InpFondeo, " InpLotMultiplier=", InpLotMultiplier);
    
-   // 1. Calcular contract_size del destino
-   double csDest = GetContractSize(symbol);
-   Print("[DEBUG] ComputeWorkerLots: csDest calculado=", csDest);
-   if(csDest<=0.0) 
-   {
-      csDest = 1.0;
-      Print("[DEBUG] ComputeWorkerLots: csDest <= 0, ajustado a 1.0");
-   }
-   
-   // 2. Calcular ratio de normalización (csOrigin siempre existe)
-   double ratio = csOrigin / csDest;
-   Print("[DEBUG] ComputeWorkerLots: ratio = csOrigin(", csOrigin, ") / csDest(", csDest, ") = ", ratio);
-   
-   // 3. Normalizar lotes del master
-   double normalizedLots = masterLots * ratio;
-   Print("[DEBUG] ComputeWorkerLots: normalizedLots = masterLots(", masterLots, ") * ratio(", ratio, ") = ", normalizedLots);
-   
-   // 4. Aplicar multiplicador SOLO si es cuenta de fondeo
    double finalLots;
+   
+   // Si es cuenta de fondeo: multiplicar directamente sin normalización por contract size
    if(InpFondeo)
    {
-      finalLots = normalizedLots * InpLotMultiplier;
-      Print("[DEBUG] ComputeWorkerLots: InpFondeo=true, finalLots = normalizedLots(", normalizedLots, ") * InpLotMultiplier(", InpLotMultiplier, ") = ", finalLots);
+      finalLots = masterLots * InpLotMultiplier;
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=true, finalLots = masterLots(", masterLots, ") * InpLotMultiplier(", InpLotMultiplier, ") = ", finalLots);
    }
    else
    {
-      finalLots = normalizedLots;
-      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots = normalizedLots(", normalizedLots, ") sin multiplicador");
+      // Si NO es cuenta de fondeo: aplicar normalización por contract size y usar FixedLots
+      // 1. Calcular contract_size del destino
+      double csDest = GetContractSize(symbol);
+      Print("[DEBUG] ComputeWorkerLots: csDest calculado=", csDest);
+      if(csDest<=0.0) 
+      {
+         csDest = 1.0;
+         Print("[DEBUG] ComputeWorkerLots: csDest <= 0, ajustado a 1.0");
+      }
+      
+      // 2. Calcular ratio de normalización
+      double ratio = 1.0;
+      if(csOrigin > 0.0)
+      {
+         ratio = csOrigin / csDest;
+      }
+      else
+      {
+         Print("[DEBUG] ComputeWorkerLots: csOrigin <= 0, usando ratio=1.0 (sin normalización por contract size)");
+      }
+      Print("[DEBUG] ComputeWorkerLots: ratio = csOrigin(", csOrigin, ") / csDest(", csDest, ") = ", ratio);
+      
+      // 3. Aplicar ratio a FixedLots
+      finalLots = InpFixedLots * ratio;
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots = InpFixedLots(", InpFixedLots, ") * ratio(", ratio, ") = ", finalLots);
    }
    
-   // 5. Ajustar a min/max/step del símbolo
+   // 4. Ajustar a min/max/step del símbolo
    double adjustedLots = AdjustFixedLots(symbol, finalLots);
    Print("[DEBUG] ComputeWorkerLots: adjustedLots después de AdjustFixedLots = ", adjustedLots);
    
