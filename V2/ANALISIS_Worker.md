@@ -10,9 +10,11 @@ Objetivo
 
 Entradas / Parámetros (Inputs)
 ------------------------------
-- `Fondeo` (bool): si true, el lote worker = lote maestro × `LotMultiplier`.
+- `Fondeo` (bool): 
+  - Si `true`: el lote worker = lote maestro × `LotMultiplier`.
+  - Si `false`: el lote worker se calcula con `LotFromCapital()` basado en `AccountBalance()` (compounding por bloques: +0.01 por cada 1000€ de capital).
 - `LotMultiplier` (double): solo se aplica cuando `Fondeo=true`.
-- `FixedLots` (double): usado cuando `Fondeo=false`; se ajusta a min/max/step del símbolo.
+- `FixedLots` (double): **Ya no se usa** (mantenido por compatibilidad, pero ignorado cuando `Fondeo=false`).
 - `Slippage` (int, pips).
 - `MagicNumber` (int, recomendado configurable; 0 si no se define otro).
 - `TimerSeconds` (int, recomendado 1s).
@@ -76,13 +78,17 @@ Bucle principal (OnTimer)
 4) Para cada evento:
    - Normalizar `event_type` (OPEN/CLOSE/MODIFY) y `order_type` (BUY/SELL) a mayúsculas.
    - Normalizar `symbol` básicamente: eliminar espacios y convertir a mayúsculas (el símbolo ya viene mapeado del Distribuidor).
-   - **Calcular `lots_worker` SOLO para eventos OPEN** (con escalado por contract size):
-     - `cs_dest = MarketInfo(symbol, MODE_TRADECONTRACTSIZE)` (si ≤0 usar 1.0).
-     - Si la línea trae `contract_size` (>0), `ratio = cs_origin / cs_dest`, si no, ratio=1.
-     - Base lote:
-         - Si `Fondeo=true`: `base = lots * LotMultiplier`.
-         - Si `Fondeo=false`: `base = FixedLots`.
-     - `lots_worker = AdjustFixedLots(symbol, base * ratio)` respetando min/max/step del destino.
+   - **Calcular `lots_worker` SOLO para eventos OPEN**:
+     - Si `Fondeo=true`: 
+       - `lots_worker = lots * LotMultiplier` (sin normalización por contract size).
+     - Si `Fondeo=false`: 
+       - `capital = AccountBalance()` (balance actual de la cuenta).
+       - `lots_worker = LotFromCapital(capital, symbol)`.
+       - `LotFromCapital()` calcula el lote según "compounding por bloques":
+         - Bloques = `floor(capital / 1000.0)` (miles completos de capital).
+         - Lote base = `blocks * 0.01` (mínimo 0.01 si blocks < 1).
+         - Ajusta automáticamente a MIN/MAX/STEP del broker.
+         - El lote del maestro (`lots`) y `contract_size` se ignoran completamente.
    - `comment` = ticket maestro (string).
    - OPEN:
      - Asegurar símbolo en MarketWatch (`SymbolSelect(symbol, true)`).
@@ -130,6 +136,35 @@ Manejo de errores / supuestos
 - Si fallo de parseo: se puede registrar en histórico como `ERROR PARSE` y descartar la línea.
 - Si el archivo no existe o está vacío: no hace nada en el ciclo.
 - Se asume UTF-8 sin BOM; si hay BOM, se ignora al inicio.
+
+Cálculo de lotaje cuando NO es cuenta de fondeo (`Fondeo=false`)
+----------------------------------------------------------------
+Cuando `Fondeo=false`, el Worker usa la función `LotFromCapital()` que implementa un sistema de "compounding por bloques" basado en el capital disponible:
+
+**Proceso de cálculo:**
+1. **Obtener capital**: `capital = AccountBalance()` (balance actual de la cuenta).
+2. **Calcular bloques**: `blocks = floor(capital / 1000.0)` (miles completos de capital).
+   - Mínimo: si `blocks < 1`, se establece `blocks = 1` (garantiza mínimo 0.01 lots).
+3. **Lote base**: `lot_base = blocks * 0.01` (+0.01 lots por cada 1000€ de capital).
+4. **Leer restricciones del broker**:
+   - `minLot = MarketInfo(symbol, MODE_MINLOT)`
+   - `maxLot = MarketInfo(symbol, MODE_MAXLOT)`
+   - `stepLot = MarketInfo(symbol, MODE_LOTSTEP)`
+   - Si algún valor es ≤ 0, usa valores por defecto (min=0.01, max=100, step=0.01).
+5. **Ajuste a límites**: Clamp a min/max del broker.
+6. **Ajuste al step**: Redondea hacia abajo al step válido más cercano.
+7. **Normalización**: Redondea a 2 decimales y re-valida límites.
+
+**Características importantes:**
+- **Ignora completamente** el lote del maestro (`lots`) y el `contract_size` del origen.
+- **Solo depende del capital** disponible en el momento de ejecutar la orden.
+- **Compounding automático**: A medida que crece el capital, el tamaño de lote aumenta proporcionalmente.
+- **Respeta límites del broker**: Ajusta automáticamente a MIN/MAX/STEP del símbolo destino.
+
+**Ejemplo práctico:**
+- Capital: 3500€ → blocks = 3 → lote = 0.03
+- Capital: 7500€ → blocks = 7 → lote = 0.07
+- Capital: 500€ → blocks = 1 → lote = 0.01 (mínimo)
 
 Búsqueda de posiciones/órdenes abiertas
 ---------------------------------------

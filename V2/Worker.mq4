@@ -225,6 +225,47 @@ double AdjustFixedLots(string symbol, double lot)
 }
 
 //+------------------------------------------------------------------+
+//| Devuelve el lotaje según "compounding por bloques":             |
+//| +0.01 por cada 1000€ de capital, y ajustado a MIN/MAX/STEP     |
+//+------------------------------------------------------------------+
+double LotFromCapital(double capital, string symbol)
+{
+   // 1) Bloques -> lote base
+   int blocks = (int)MathFloor(capital / 1000.0); // miles completos
+   if(blocks < 1) blocks = 1;                     // mínimo 0.01 (1 bloque)
+
+   double lot = blocks * 0.01;
+
+   // 2) Leer restricciones del broker
+   double minLot  = MarketInfo(symbol, MODE_MINLOT);
+   double maxLot  = MarketInfo(symbol, MODE_MAXLOT);
+   double stepLot = MarketInfo(symbol, MODE_LOTSTEP);
+
+   // Fallbacks por si el broker devuelve 0
+   if(minLot  <= 0.0) minLot  = 0.01;
+   if(maxLot  <= 0.0) maxLot  = 100.0;
+   if(stepLot <= 0.0) stepLot = 0.01;
+
+   // 3) Clamp a min/max
+   if(lot < minLot) lot = minLot;
+   if(lot > maxLot) lot = maxLot;
+
+   // 4) Ajuste al step (redondeo hacia abajo para no pasarse)
+   int steps = (int)MathFloor((lot - minLot) / stepLot + 1e-9);
+   lot = minLot + steps * stepLot;
+
+   // 5) Redondeo por seguridad a 2 decimales (típico 0.01)
+   // (si tu step fuera 0.001, cambia a 3 decimales)
+   lot = NormalizeDouble(lot, 2);
+
+   // Re-clamp final por si el redondeo tocó bordes
+   if(lot < minLot) lot = minLot;
+   if(lot > maxLot) lot = maxLot;
+
+   return lot;
+}
+
+//+------------------------------------------------------------------+
 //| Calcula lotaje del worker                                        |
 //+------------------------------------------------------------------+
 double ComputeWorkerLots(string symbol, double masterLots, double csOrigin)
@@ -242,41 +283,14 @@ double ComputeWorkerLots(string symbol, double masterLots, double csOrigin)
    }
    else
    {
-      // Si NO es cuenta de fondeo: aplicar normalización por contract size y usar FixedLots
-      // 1. Calcular contract_size del destino
-      double csDest = GetContractSize(symbol);
-      Print("[DEBUG] ComputeWorkerLots: csDest calculado=", csDest);
-      if(csDest<=0.0) 
-      {
-         csDest = 1.0;
-         Print("[DEBUG] ComputeWorkerLots: csDest <= 0, ajustado a 1.0");
-      }
-      
-      // 2. Calcular ratio de normalización
-      double ratio = 1.0;
-      if(csOrigin > 0.0)
-      {
-         ratio = csOrigin / csDest;
-      }
-      else
-      {
-         Print("[DEBUG] ComputeWorkerLots: csOrigin <= 0, usando ratio=1.0 (sin normalización por contract size)");
-      }
-      Print("[DEBUG] ComputeWorkerLots: ratio = csOrigin(", csOrigin, ") / csDest(", csDest, ") = ", ratio);
-      
-      // 3. Normalizar lotes del master
-      double normalizedLots = masterLots * ratio;
-      Print("[DEBUG] ComputeWorkerLots: normalizedLots = masterLots(", masterLots, ") * ratio(", ratio, ") = ", normalizedLots);
-      
-      finalLots = normalizedLots;
-      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots = normalizedLots(", normalizedLots, ") sin multiplicador");
+      // Si NO es cuenta de fondeo: usar LotFromCapital basado en AccountBalance()
+      double capital = AccountBalance();
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, capital=", capital);
+      finalLots = LotFromCapital(capital, symbol);
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots calculado con LotFromCapital = ", finalLots);
    }
    
-   // 4. Ajustar a min/max/step del símbolo
-   double adjustedLots = AdjustFixedLots(symbol, finalLots);
-   Print("[DEBUG] ComputeWorkerLots: adjustedLots después de AdjustFixedLots = ", adjustedLots);
-   
-   return(adjustedLots);
+   return(finalLots);
 }
 
 //+------------------------------------------------------------------+
