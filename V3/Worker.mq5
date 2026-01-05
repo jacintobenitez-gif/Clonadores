@@ -1390,16 +1390,78 @@ void OnTimer()
             }
             else
             {
-               // Si no se encuentra en ningún lado, enviar alerta y registrar en histórico
-               string alerta = "ALERTA: Ticket " + ev.ticket + " no encontrado";
-               Notify(alerta);
-               AppendHistory(alerta, ev, 0, 0, 0, 0, 0);
-               
-               // Escribir error detallado en archivo
-               WriteCloseErrorToFile(ev);
-               
-               // Eliminar información de OPEN de memoria
-               RemoveOpenLog(ev.ticket);
+               // Paso 3: Buscar en memoria (g_openLogs) usando ticketWorker almacenado
+               OpenLogInfo openInfo = GetOpenLog(ev.ticket);
+               if(openInfo.ticketMaestro != "")
+               {
+                  // Encontrado en memoria: intentar cerrar usando ticketWorker directamente
+                  ulong ticketWorker = openInfo.ticketWorker;
+                  if(PositionSelectByTicket(ticketWorker))
+                  {
+                     // Posición encontrada y seleccionada: cerrar
+                     double volume = PositionGetDouble(POSITION_VOLUME);
+                     double profitBefore = PositionGetDouble(POSITION_PROFIT);
+                     ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+                     string posSymbol = PositionGetString(POSITION_SYMBOL);
+                     
+                     // Obtener tick actual para precio de cierre
+                     MqlTick tick;
+                     double closePrice = 0.0;
+                     if(SymbolInfoTick(posSymbol, tick))
+                     {
+                        if(posType == POSITION_TYPE_BUY)
+                           closePrice = tick.bid;
+                        else
+                           closePrice = tick.ask;
+                     }
+                     datetime closeTime = TimeCurrent();
+                     
+                     if(trade.PositionClose(ticketWorker))
+                     {
+                        string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO (por ticketWorker): " + DoubleToString(volume,2) + " lots";
+                        Notify(ok);
+                        AppendHistory("CLOSE OK (por ticketWorker)", ev, 0, 0, closePrice, closeTime, profitBefore);
+                        RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                        // Eliminar información de OPEN de memoria
+                        RemoveOpenLog(ev.ticket);
+                     }
+                     else
+                     {
+                        string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO (por ticketWorker)");
+                        if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
+                        {
+                           Notify(err);
+                           AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                        }
+                        AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore);
+                        // mantener para reintento
+                        ArrayResize(remaining, remainingCount+1);
+                        remaining[remainingCount]=ev.originalLine;
+                        remainingCount++;
+                     }
+                  }
+                  else
+                  {
+                     // ticketWorker encontrado pero posición ya no existe (probablemente cerrada)
+                     AppendHistory("Operacion ya esta cerrada (ticketWorker no encontrado)", ev, 0, 0, 0, 0, 0);
+                     RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                     // Eliminar información de OPEN de memoria
+                     RemoveOpenLog(ev.ticket);
+                  }
+               }
+               else
+               {
+                  // Si no se encuentra en ningún lado, enviar alerta y registrar en histórico
+                  string alerta = "ALERTA: Ticket " + ev.ticket + " no encontrado";
+                  Notify(alerta);
+                  AppendHistory(alerta, ev, 0, 0, 0, 0, 0);
+                  
+                  // Escribir error detallado en archivo
+                  WriteCloseErrorToFile(ev);
+                  
+                  // Eliminar información de OPEN de memoria
+                  RemoveOpenLog(ev.ticket);
+               }
             }
          }
       }
