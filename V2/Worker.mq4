@@ -39,6 +39,29 @@ struct EventRec
 };
 
 //+------------------------------------------------------------------+
+//| Estructura para guardar información de OPEN en memoria           |
+//+------------------------------------------------------------------+
+struct OpenLogInfo
+{
+   string ticketMaestro;
+   int ticketWorker;
+   string timestampOpen;
+   string symbol;
+   string commentSent;
+   int commentLength;
+   int ordersTotalBefore;
+   int ordersTotalAfter;
+   string timestampVerify;
+   bool verifyOrderSelectOK;
+   string verifyCommentRead;
+   bool verifyCommentMatch;
+   int verifyDelayMs;
+};
+
+OpenLogInfo g_openLogs[100];  // Array para guardar logs de OPEN
+int g_openLogsCount = 0;      // Contador de logs guardados
+
+//+------------------------------------------------------------------+
 //| Utilidades de arrays simples                                     |
 //+------------------------------------------------------------------+
 bool TicketInArray(const string ticket, string &arr[], int count)
@@ -156,6 +179,329 @@ void Notify(string msg)
 {
    string full = "W: " + IntegerToString(AccountNumber()) + " - " + msg;
    SendNotification(full);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Obtener timestamp con milisegundos                      |
+//+------------------------------------------------------------------+
+string GetTimestampWithMillis()
+{
+   datetime t = TimeCurrent();
+   int ms = (int)(GetTickCount() % 1000);
+   return(StringFormat("%s.%03d", TimeToString(t, TIME_DATE|TIME_SECONDS), ms));
+}
+
+//+------------------------------------------------------------------+
+//| Convierte string Unicode (MQL4) a bytes UTF-8                     |
+//+------------------------------------------------------------------+
+void StringToUTF8Bytes(string str, uchar &bytes[])
+{
+   ArrayResize(bytes, 0);
+   int len = StringLen(str);
+   
+   for(int i = 0; i < len; i++)
+   {
+      ushort ch = StringGetCharacter(str, i);
+      
+      // ASCII (0x00-0x7F): 1 byte
+      if(ch < 0x80)
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 1);
+         bytes[size] = (uchar)ch;
+      }
+      // 2 bytes UTF-8: 110xxxxx 10xxxxxx (0x80-0x7FF)
+      else if(ch < 0x800)
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 2);
+         bytes[size] = (uchar)(0xC0 | (ch >> 6));
+         bytes[size + 1] = (uchar)(0x80 | (ch & 0x3F));
+      }
+      // 3 bytes UTF-8: 1110xxxx 10xxxxxx 10xxxxxx (0x800-0xFFFF)
+      else
+      {
+         int size = ArraySize(bytes);
+         ArrayResize(bytes, size + 3);
+         bytes[size] = (uchar)(0xE0 | (ch >> 12));
+         bytes[size + 1] = (uchar)(0x80 | ((ch >> 6) & 0x3F));
+         bytes[size + 2] = (uchar)(0x80 | (ch & 0x3F));
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Convertir string a bytes para logging                   |
+//+------------------------------------------------------------------+
+string StringToBytes(string s)
+{
+   string result = "[";
+   int len = StringLen(s);
+   for(int i = 0; i < len; i++)
+   {
+      if(i > 0) result += ",";
+      result += IntegerToString((int)StringGetCharacter(s, i));
+   }
+   result += "]";
+   return(result);
+}
+
+//+------------------------------------------------------------------+
+//| Añade información de OPEN exitoso a memoria                     |
+//+------------------------------------------------------------------+
+void AddOpenLog(EventRec &ev, int ticketWorker, int ordersTotalBefore)
+{
+   if(g_openLogsCount >= 100) return;  // Límite de seguridad
+   
+   string tsOpen = GetTimestampWithMillis();
+   int ordersTotalAfter = OrdersTotal();
+   string commentSent = ev.ticket;
+   int commentLength = StringLen(commentSent);
+   
+   // Guardar información básica
+   g_openLogs[g_openLogsCount].ticketMaestro = ev.ticket;
+   g_openLogs[g_openLogsCount].ticketWorker = ticketWorker;
+   g_openLogs[g_openLogsCount].timestampOpen = tsOpen;
+   g_openLogs[g_openLogsCount].symbol = ev.symbol;
+   g_openLogs[g_openLogsCount].commentSent = commentSent;
+   g_openLogs[g_openLogsCount].commentLength = commentLength;
+   g_openLogs[g_openLogsCount].ordersTotalBefore = ordersTotalBefore;
+   g_openLogs[g_openLogsCount].ordersTotalAfter = ordersTotalAfter;
+   
+   // Verificación inmediata
+   string tsVerify = GetTimestampWithMillis();
+   if(OrderSelect(ticketWorker, SELECT_BY_TICKET))
+   {
+      string commentRead = OrderComment();
+      commentRead = Trim(commentRead);
+      string commentSentTrimmed = Trim(commentSent);
+      bool match = (commentRead == commentSentTrimmed);
+      int delay = (int)(GetTickCount() % 1000);
+      
+      g_openLogs[g_openLogsCount].timestampVerify = tsVerify;
+      g_openLogs[g_openLogsCount].verifyOrderSelectOK = true;
+      g_openLogs[g_openLogsCount].verifyCommentRead = commentRead;
+      g_openLogs[g_openLogsCount].verifyCommentMatch = match;
+      g_openLogs[g_openLogsCount].verifyDelayMs = delay;
+   }
+   else
+   {
+      g_openLogs[g_openLogsCount].timestampVerify = tsVerify;
+      g_openLogs[g_openLogsCount].verifyOrderSelectOK = false;
+      g_openLogs[g_openLogsCount].verifyCommentRead = "";
+      g_openLogs[g_openLogsCount].verifyCommentMatch = false;
+      g_openLogs[g_openLogsCount].verifyDelayMs = (int)(GetTickCount() % 1000);
+      
+      // Alerta: OPEN exitoso pero verificación inmediata falló
+      string alerta = "ALERTA: OPEN ticket " + ev.ticket + " exitoso pero OrderSelect falló. Ticket worker: " + IntegerToString(ticketWorker);
+      Notify(alerta);
+   }
+   
+   g_openLogsCount++;
+}
+
+//+------------------------------------------------------------------+
+//| Elimina información de OPEN de memoria                           |
+//+------------------------------------------------------------------+
+void RemoveOpenLog(string ticketMaestro)
+{
+   for(int i = 0; i < g_openLogsCount; i++)
+   {
+      if(g_openLogs[i].ticketMaestro == ticketMaestro)
+      {
+         // Mover los siguientes hacia atrás
+         for(int j = i; j < g_openLogsCount - 1; j++)
+         {
+            g_openLogs[j] = g_openLogs[j + 1];
+         }
+         g_openLogsCount--;
+         return;
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Obtiene información de OPEN de memoria                           |
+//+------------------------------------------------------------------+
+OpenLogInfo GetOpenLog(string ticketMaestro)
+{
+   OpenLogInfo empty;
+   empty.ticketMaestro = "";
+   
+   for(int i = 0; i < g_openLogsCount; i++)
+   {
+      if(g_openLogs[i].ticketMaestro == ticketMaestro)
+      {
+         return g_openLogs[i];
+      }
+   }
+   return empty;
+}
+
+//+------------------------------------------------------------------+
+//| Genera string de log cuando busca en historial y no encuentra  |
+//+------------------------------------------------------------------+
+string GetCloseHistoryNotFoundLog(EventRec &ev)
+{
+   string ts = GetTimestampWithMillis();
+   int ordersTotal = OrdersTotal();
+   int historyTotal = OrdersHistoryTotal();
+   int ticketLength = StringLen(ev.ticket);
+   
+   // Obtener información de última orden en historial
+   string lastHistoryInfo = "N/A";
+   if(historyTotal > 0 && OrderSelect(historyTotal - 1, SELECT_BY_POS, MODE_HISTORY))
+   {
+      int lastTicket = OrderTicket();
+      string lastComment = Trim(OrderComment());
+      lastHistoryInfo = StringFormat("ticket=%d comment=%s", lastTicket, lastComment);
+   }
+   
+   return StringFormat("[CLOSE_HISTORY_SEARCH] timestamp=%s | ticket_buscado=%s | ticket_length=%d | OrdersTotal=%d | HistoryTotal=%d | encontrado_en_historial=NO | rango_busqueda=todo_historial | ultima_orden_historial_%s",
+                      ts, ev.ticket, ticketLength, ordersTotal, historyTotal, lastHistoryInfo);
+}
+
+//+------------------------------------------------------------------+
+//| Escribe error de CLOSE en archivo ERROR_CLOSE_WORKER_{ID}.txt  |
+//+------------------------------------------------------------------+
+void WriteCloseErrorToFile(EventRec &ev)
+{
+   string errorFile = CommonRelative("ERROR_CLOSE_WORKER_" + g_workerId + ".txt");
+   int handle = FileOpen(errorFile, FILE_BIN | FILE_READ | FILE_WRITE | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   
+   if(handle == INVALID_HANDLE)
+   {
+      // Intentar crear archivo nuevo
+      handle = FileOpen(errorFile, FILE_BIN | FILE_WRITE | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   }
+   
+   if(handle == INVALID_HANDLE)
+      return;  // No se pudo abrir/crear archivo
+   
+   FileSeek(handle, 0, SEEK_END);
+   
+   string ts = GetTimestampWithMillis();
+   int ordersTotal = OrdersTotal();
+   int historyTotal = OrdersHistoryTotal();
+   int ticketLength = StringLen(ev.ticket);
+   
+   // Separador
+   string separator = "================================================================================\r\n";
+   uchar sepBytes[];
+   StringToUTF8Bytes(separator, sepBytes);
+   FileWriteArray(handle, sepBytes);
+   
+   // Log básico
+   string log1 = StringFormat("[CLOSE_NOT_FOUND] timestamp=%s | ticket_maestro=%s | ticket_buscado=%s | ticket_length=%d | OrdersTotal=%d | HistoryTotal=%d\r\n",
+                              ts, ev.ticket, ev.ticket, ticketLength, ordersTotal, historyTotal);
+   uchar log1Bytes[];
+   StringToUTF8Bytes(log1, log1Bytes);
+   FileWriteArray(handle, log1Bytes);
+   
+   // Log del evento CLOSE
+   string log2 = StringFormat("[CLOSE_EVENT_INFO] timestamp=%s | linea_original=%s | ticket_parseado=%s | ticket_length=%d | symbol=%s | orderType=%s | lots=%.2f\r\n",
+                              ts, ev.originalLine, ev.ticket, ticketLength, ev.symbol, ev.orderType, ev.lots);
+   uchar log2Bytes[];
+   StringToUTF8Bytes(log2, log2Bytes);
+   FileWriteArray(handle, log2Bytes);
+   
+   // Log de búsqueda en historial
+   string historyLog = GetCloseHistoryNotFoundLog(ev) + "\r\n";
+   uchar historyBytes[];
+   StringToUTF8Bytes(historyLog, historyBytes);
+   FileWriteArray(handle, historyBytes);
+   
+   // Log de todas las órdenes abiertas
+   string ordersDump = "[CLOSE_ORDERS_DUMP] timestamp=" + ts + " | ticket_buscado=" + ev.ticket + " | total_abiertas=" + IntegerToString(ordersTotal) + " | ordenes=[";
+   int count = 0;
+   for(int i = OrdersTotal() - 1; i >= 0 && count < 20; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      
+      if(count > 0) ordersDump += ", ";
+      int orderTicket = OrderTicket();
+      string orderComment = Trim(OrderComment());
+      int commentLen = StringLen(orderComment);
+      string orderSymbol = OrderSymbol();
+      int orderType = OrderType();
+      string typeStr = (orderType == OP_BUY ? "BUY" : (orderType == OP_SELL ? "SELL" : "OTHER"));
+      
+      ordersDump += StringFormat("ticket=%d comment='%s' len=%d symbol=%s type=%s", orderTicket, orderComment, commentLen, orderSymbol, typeStr);
+      count++;
+   }
+   ordersDump += "]\r\n";
+   uchar ordersBytes[];
+   StringToUTF8Bytes(ordersDump, ordersBytes);
+   FileWriteArray(handle, ordersBytes);
+   
+   // Log de comparación byte a byte
+   string ticketBytes = StringToBytes(ev.ticket);
+   string compareLog = "[CLOSE_COMMENT_COMPARE] ticket_buscado=" + ev.ticket + " | bytes_buscado=" + ticketBytes + " | ordenes_comentarios=[";
+   count = 0;
+   for(int i = OrdersTotal() - 1; i >= 0 && count < 10; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      
+      if(count > 0) compareLog += ", ";
+      int orderTicket = OrderTicket();
+      string orderComment = Trim(OrderComment());
+      string commentBytes = StringToBytes(orderComment);
+      bool match = (orderComment == Trim(ev.ticket));
+      
+      compareLog += StringFormat("ticket=%d bytes=%s match=%s", orderTicket, commentBytes, (match ? "YES" : "NO"));
+      count++;
+   }
+   compareLog += "]\r\n";
+   uchar compareBytes[];
+   StringToUTF8Bytes(compareLog, compareBytes);
+   FileWriteArray(handle, compareBytes);
+   
+   // Buscar información del OPEN en memoria
+   OpenLogInfo openInfo = GetOpenLog(ev.ticket);
+   if(StringLen(openInfo.ticketMaestro) > 0)
+   {
+      // Información del OPEN encontrada
+      string openLog = "--- INFORMACION DEL OPEN CORRESPONDIENTE ---\r\n";
+      uchar openLogBytes[];
+      StringToUTF8Bytes(openLog, openLogBytes);
+      FileWriteArray(handle, openLogBytes);
+      
+      string openSuccess = StringFormat("[OPEN_SUCCESS] timestamp=%s | ticket_maestro=%s | ticket_worker=%d | symbol=%s | comment_sent=%s | comment_length=%d | OrderSend_retcode=OK | OrdersTotal_antes=%d | OrdersTotal_despues=%d\r\n",
+                                       openInfo.timestampOpen, openInfo.ticketMaestro, openInfo.ticketWorker, openInfo.symbol, openInfo.commentSent, openInfo.commentLength, openInfo.ordersTotalBefore, openInfo.ordersTotalAfter);
+      uchar openSuccessBytes[];
+      StringToUTF8Bytes(openSuccess, openSuccessBytes);
+      FileWriteArray(handle, openSuccessBytes);
+      
+      string verifyResult = openInfo.verifyOrderSelectOK ? "OK" : "FAIL";
+      string verifyMatch = openInfo.verifyCommentMatch ? "YES" : "NO";
+      string openVerify = StringFormat("[OPEN_VERIFY] timestamp=%s | ticket_worker=%d | OrderSelect_result=%s | OrderComment_read=%s | comment_match=%s | delay_ms=%d\r\n",
+                                      openInfo.timestampVerify, openInfo.ticketWorker, verifyResult, openInfo.verifyCommentRead, verifyMatch, openInfo.verifyDelayMs);
+      uchar openVerifyBytes[];
+      StringToUTF8Bytes(openVerify, openVerifyBytes);
+      FileWriteArray(handle, openVerifyBytes);
+      
+      // Timing entre OPEN y CLOSE
+      string timingLog = StringFormat("[CLOSE_TIMING] ticket=%s | OPEN_timestamp=%s | CLOSE_timestamp=%s\r\n",
+                                     ev.ticket, openInfo.timestampOpen, ts);
+      uchar timingBytes[];
+      StringToUTF8Bytes(timingLog, timingBytes);
+      FileWriteArray(handle, timingBytes);
+   }
+   else
+   {
+      // No se encontró información del OPEN
+      string noOpenLog = "--- INFORMACION DEL OPEN NO DISPONIBLE EN MEMORIA ---\r\n";
+      uchar noOpenBytes[];
+      StringToUTF8Bytes(noOpenLog, noOpenBytes);
+      FileWriteArray(handle, noOpenBytes);
+   }
+   
+   // Separador final
+   FileWriteArray(handle, sepBytes);
+   
+   FileClose(handle);
 }
 
 //+------------------------------------------------------------------+
@@ -722,6 +1068,7 @@ void OnTimer()
          double price = (type==OP_BUY ? Ask : Bid);
          Print("[DEBUG] OnTimer: Preparando OrderSend: symbol=", ev.symbol, " type=", type, " lots=", lotsWorker, " price=", price, " sl=", ev.sl, " tp=", ev.tp, " comment=", ev.ticket);
          ResetLastError();
+         int ordersTotalBefore = OrdersTotal();
          int ticketNew = OrderSend(ev.symbol, type, lotsWorker, price, InpSlippage, ev.sl, ev.tp, ev.ticket, InpMagicNumber, 0, clrNONE);
          Print("[DEBUG] OnTimer: OrderSend retornó ticketNew=", ticketNew);
          if(ticketNew<0)
@@ -741,6 +1088,8 @@ void OnTimer()
             string ok = "Ticket: " + ev.ticket + " - OPEN EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(lotsWorker,2) + " lots";
             Notify(ok);
             AppendHistory("EXITOSO", ev, 0, 0, 0, 0, 0);
+            // Guardar información de OPEN en memoria
+            AddOpenLog(ev, ticketNew, ordersTotalBefore);
          }
       }
       else if(ev.eventType=="CLOSE")
@@ -770,6 +1119,8 @@ void OnTimer()
                Notify(ok);
                AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore);
                RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+               // Eliminar información de OPEN de memoria
+               RemoveOpenLog(ev.ticket);
             }
             else
             {
@@ -795,8 +1146,22 @@ void OnTimer()
                // Encontrada en historial: ya está cerrada
                AppendHistory("Operacion ya esta cerrada", ev, 0, 0, 0, 0, 0);
                RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+               // Eliminar información de OPEN de memoria
+               RemoveOpenLog(ev.ticket);
             }
-            // Si no se encuentra en ningún lado, no se hace nada (se descarta)
+            else
+            {
+               // Si no se encuentra en ningún lado, enviar alerta y registrar en histórico
+               string alerta = "ALERTA: Ticket " + ev.ticket + " no encontrado";
+               Notify(alerta);
+               AppendHistory(alerta, ev, 0, 0, 0, 0, 0);
+               
+               // Escribir error detallado en archivo
+               WriteCloseErrorToFile(ev);
+               
+               // Eliminar información de OPEN de memoria
+               RemoveOpenLog(ev.ticket);
+            }
          }
       }
       else if(ev.eventType=="MODIFY")
