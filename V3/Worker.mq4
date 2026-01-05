@@ -1069,7 +1069,7 @@ void OnTimer()
          Print("[DEBUG] OnTimer: Preparando OrderSend: symbol=", ev.symbol, " type=", type, " lots=", lotsWorker, " price=", price, " sl=", ev.sl, " tp=", ev.tp, " magic=", magicOrigen);
          ResetLastError();
          int ordersTotalBefore = OrdersTotal();
-         int ticketNew = OrderSend(ev.symbol, type, lotsWorker, price, InpSlippage, ev.sl, ev.tp, "", magicOrigen, 0, clrNONE);
+         int ticketNew = OrderSend(ev.symbol, type, lotsWorker, price, InpSlippage, ev.sl, ev.tp, ev.ticket, magicOrigen, 0, clrNONE);
          Print("[DEBUG] OnTimer: OrderSend retornó ticketNew=", ticketNew);
          if(ticketNew<0)
          {

@@ -533,6 +533,47 @@ double AdjustFixedLots(string symbol, double lot)
 }
 
 //+------------------------------------------------------------------+
+//| Devuelve el lotaje según "compounding por bloques":             |
+//| +0.01 por cada 1000€ de capital, y ajustado a MIN/MAX/STEP     |
+//+------------------------------------------------------------------+
+double LotFromCapital(double capital, string symbol)
+{
+   // 1) Bloques -> lote base
+   int blocks = (int)MathFloor(capital / 1000.0); // miles completos
+   if(blocks < 1) blocks = 1;                     // mínimo 0.01 (1 bloque)
+
+   double lot = blocks * 0.01;
+
+   // 2) Leer restricciones del broker
+   double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double stepLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+
+   // Fallbacks por si el broker devuelve 0
+   if(minLot  <= 0.0) minLot  = 0.01;
+   if(maxLot  <= 0.0) maxLot  = 100.0;
+   if(stepLot <= 0.0) stepLot = 0.01;
+
+   // 3) Clamp a min/max
+   if(lot < minLot) lot = minLot;
+   if(lot > maxLot) lot = maxLot;
+
+   // 4) Ajuste al step (redondeo hacia abajo para no pasarse)
+   int steps = (int)MathFloor((lot - minLot) / stepLot + 1e-9);
+   lot = minLot + steps * stepLot;
+
+   // 5) Redondeo por seguridad a 2 decimales (típico 0.01)
+   // (si tu step fuera 0.001, cambia a 3 decimales)
+   lot = NormalizeDouble(lot, 2);
+
+   // Re-clamp final por si el redondeo tocó bordes
+   if(lot < minLot) lot = minLot;
+   if(lot > maxLot) lot = maxLot;
+
+   return lot;
+}
+
+//+------------------------------------------------------------------+
 //| Calcula lotaje del worker                                        |
 //+------------------------------------------------------------------+
 double ComputeWorkerLots(string symbol, double masterLots)
@@ -542,7 +583,7 @@ double ComputeWorkerLots(string symbol, double masterLots)
    
    double finalLots;
    
-   // Si es cuenta de fondeo: multiplicar directamente
+   // Si es cuenta de fondeo: multiplicar directamente sin normalización por contract size
    if(InpFondeo)
    {
       finalLots = masterLots * InpLotMultiplier;
@@ -550,16 +591,14 @@ double ComputeWorkerLots(string symbol, double masterLots)
    }
    else
    {
-      // Si NO es cuenta de fondeo: usar directamente masterLots sin normalización
-      finalLots = masterLots;
-      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots = masterLots(", masterLots, ") sin normalización");
+      // Si NO es cuenta de fondeo: usar LotFromCapital basado en AccountBalance()
+      double capital = AccountInfoDouble(ACCOUNT_BALANCE);
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, capital=", capital);
+      finalLots = LotFromCapital(capital, symbol);
+      Print("[DEBUG] ComputeWorkerLots: InpFondeo=false, finalLots calculado con LotFromCapital = ", finalLots);
    }
    
-   // 4. Ajustar a min/max/step del símbolo
-   double adjustedLots = AdjustFixedLots(symbol, finalLots);
-   Print("[DEBUG] ComputeWorkerLots: adjustedLots después de AdjustFixedLots = ", adjustedLots);
-   
-   return(adjustedLots);
+   return(finalLots);
 }
 
 //+------------------------------------------------------------------+
@@ -1066,7 +1105,11 @@ void OnTimer()
    string lines[];
    int total = ReadQueue(g_queueFile, lines);
    if(total==0)
+   {
+      Print("[DEBUG] OnTimer: Cola vacía, no hay eventos para procesar");
       return;
+   }
+   Print("[DEBUG] OnTimer: Leyendo cola, total líneas=", total);
 
    // Detectar cabecera opcional
    int startIdx=0;
@@ -1113,6 +1156,7 @@ void OnTimer()
          
          // Verificar si ya existe una posición abierta con este ticket (evitar duplicados)
          ulong existingPos = FindOpenPosition(ev.ticket);
+         Print("[DEBUG] OnTimer: FindOpenPosition retornó existingPos=", existingPos, " para ticket=", ev.ticket);
          if(existingPos > 0)
          {
             Print("[DEBUG] OnTimer: Ya existe posición abierta con ticket=", ev.ticket, " posTicket=", existingPos, ", saltando OPEN");
@@ -1151,9 +1195,9 @@ void OnTimer()
          int positionsTotalBefore = PositionsTotal();
          trade.SetExpertMagicNumber(magicOrigen);
          if(ev.orderType=="BUY")
-            result = trade.Buy(lotsWorker, ev.symbol, price, ev.sl, ev.tp, "");
+            result = trade.Buy(lotsWorker, ev.symbol, price, ev.sl, ev.tp, ev.ticket);
          else
-            result = trade.Sell(lotsWorker, ev.symbol, price, ev.sl, ev.tp, "");
+            result = trade.Sell(lotsWorker, ev.symbol, price, ev.sl, ev.tp, ev.ticket);
          Print("[DEBUG] OnTimer: PositionOpen retornó result=", result);
          
          if(!result)
