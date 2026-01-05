@@ -927,41 +927,92 @@ bool ParseLine(const string line, EventRec &ev)
    string parts[];
    int n = StringSplit(line, ';', parts);
    Print("[DEBUG] ParseLine: StringSplit retornó ", n, " partes");
-   if(n<5)
+   if(n<2)
    {
-      Print("[ERROR] ParseLine: Línea tiene menos de 5 campos (", n, "), descartando");
+      Print("[ERROR] ParseLine: Línea tiene menos de 2 campos (", n, "), descartando");
       return(false);
    }
    string tmp;
 
+   // Campos comunes a todos los eventos
    tmp = Trim(parts[0]); ev.eventType = Upper(tmp);
    ev.ticket = Trim(parts[1]);
-   tmp = Trim(parts[2]); ev.orderType = Upper(tmp);
-
-   tmp = Trim(parts[3]); StringReplace(tmp, ",", "."); ev.lots = StrToDouble(tmp);
-   tmp = Trim(parts[4]); ev.symbol = Trim(Upper(tmp));
-
-   if(n>5)
+   
+   // Validación básica: eventType y ticket son siempre requeridos
+   if(ev.eventType=="" || ev.ticket=="")
    {
-      tmp = Trim(parts[5]); StringReplace(tmp, ",", "."); ev.sl = StrToDouble(tmp);
+      Print("[ERROR] ParseLine: Campos básicos vacíos. eventType='", ev.eventType, "' ticket='", ev.ticket, "'");
+      return(false);
    }
-   else ev.sl = 0.0;
-
-   if(n>6)
+   
+   // Inicializar campos opcionales
+   ev.orderType = "";
+   ev.lots = 0.0;
+   ev.symbol = "";
+   ev.sl = 0.0;
+   ev.tp = 0.0;
+   
+   // Parsear según el tipo de evento
+   if(ev.eventType == "OPEN")
    {
-      tmp = Trim(parts[6]); StringReplace(tmp, ",", "."); ev.tp = StrToDouble(tmp);
+      // OPEN: event_type;ticket;order_type;lots;symbol;sl;tp
+      if(n < 5)
+      {
+         Print("[ERROR] ParseLine: OPEN requiere al menos 5 campos (", n, ")");
+         return(false);
+      }
+      tmp = Trim(parts[2]); ev.orderType = Upper(tmp);
+      tmp = Trim(parts[3]); StringReplace(tmp, ",", "."); ev.lots = StrToDouble(tmp);
+      tmp = Trim(parts[4]); ev.symbol = Trim(Upper(tmp));
+      
+      if(n > 5)
+      {
+         tmp = Trim(parts[5]); 
+         if(tmp != "") { StringReplace(tmp, ",", "."); ev.sl = StrToDouble(tmp); }
+      }
+      
+      if(n > 6)
+      {
+         tmp = Trim(parts[6]); 
+         if(tmp != "") { StringReplace(tmp, ",", "."); ev.tp = StrToDouble(tmp); }
+      }
+      
+      // Validar campos requeridos para OPEN
+      if(ev.symbol == "" || ev.orderType == "")
+      {
+         Print("[ERROR] ParseLine: OPEN requiere symbol y orderType. symbol='", ev.symbol, "' orderType='", ev.orderType, "'");
+         return(false);
+      }
    }
-   else ev.tp = 0.0;
+   else if(ev.eventType == "MODIFY")
+   {
+      // MODIFY: event_type;ticket;;;;;sl_new;tp_new
+      if(n > 5)
+      {
+         tmp = Trim(parts[5]); 
+         if(tmp != "") { StringReplace(tmp, ",", "."); ev.sl = StrToDouble(tmp); }
+      }
+      
+      if(n > 6)
+      {
+         tmp = Trim(parts[6]); 
+         if(tmp != "") { StringReplace(tmp, ",", "."); ev.tp = StrToDouble(tmp); }
+      }
+   }
+   else if(ev.eventType == "CLOSE")
+   {
+      // CLOSE: event_type;ticket;;;;;;
+      // No requiere campos adicionales, solo ticket
+   }
+   else
+   {
+      Print("[ERROR] ParseLine: Tipo de evento desconocido: '", ev.eventType, "'");
+      return(false);
+   }
    
    ev.originalLine = line;
    
-   Print("[DEBUG] ParseLine: eventType=", ev.eventType, " ticket=", ev.ticket, " symbol=", ev.symbol, " lots=", ev.lots);
-   
-   if(ev.eventType=="" || ev.ticket=="" || ev.symbol=="")
-   {
-      Print("[ERROR] ParseLine: Campos requeridos vacíos. eventType='", ev.eventType, "' ticket='", ev.ticket, "' symbol='", ev.symbol, "'");
-      return(false);
-   }
+   Print("[DEBUG] ParseLine: eventType=", ev.eventType, " ticket=", ev.ticket, " symbol=", ev.symbol, " lots=", ev.lots, " sl=", ev.sl, " tp=", ev.tp);
    Print("[DEBUG] ParseLine: Parseo exitoso");
    return(true);
 }
