@@ -10,7 +10,7 @@
 #include <Trade\Trade.mqh>
 
 input bool   InpFondeo        = true;
-input double InpLotMultiplier = 1.0;
+input double InpLotMultiplier = 2.0;
 input double InpFixedLots     = 0.10;
 input int    InpSlippage      = 30;     // puntos
 input ulong  InpMagicNumber   = 0;
@@ -315,7 +315,7 @@ string GetCloseHistoryNotFoundLog(EventRec &ev)
       }
    }
    
-   return StringFormat("[CLOSE_HISTORY_SEARCH] timestamp=%s | ticket_buscado=%s | ticket_length=%d | PositionsTotal=%d | HistoryTotal=%d | encontrado_en_historial=NO | rango_busqueda=30_dias | ultima_orden_historial_%s",
+   return StringFormat("[CLOSE_HISTORY_SEARCH] timestamp=%s | ticket_buscado=%s | ticket_length=%d | PositionsTotal=%d | HistoryTotal=%d | encontrado_en_historial=NO | rango_busqueda=todo_historial | ultima_orden_historial_%s",
                       ts, ev.ticket, ticketLength, positionsTotal, historyTotal, lastHistoryInfo);
 }
 
@@ -505,6 +505,18 @@ void WriteOpenLogToFile(string ticketMaestro, ulong ticketWorker, string symbol,
    // Construir línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
    string timestamp = GetTimestampWithMillis();
    string line = ticketMaestro + ";" + IntegerToString(ticketWorker) + ";" + timestamp + ";" + symbol + ";" + IntegerToString(magic);
+   
+   // Si el archivo no existe, crearlo primero (igual que EnsureHistoryHeader)
+   if(!FileIsExist(relPath, FILE_COMMON))
+   {
+      int h = FileOpen(relPath, FILE_WRITE|FILE_TXT|FILE_COMMON);
+      if(h == INVALID_HANDLE)
+      {
+         Print("ERROR: No se pudo crear archivo OPEN log: ", relPath, " err=", GetLastError());
+         return;
+      }
+      FileClose(h);
+   }
    
    // Abrir archivo en modo append (igual que AppendHistory)
    int handle = FileOpen(relPath, FILE_READ | FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_WRITE);
@@ -1016,7 +1028,7 @@ void RewriteQueue(string relPath, string &lines[], int count)
       return;
    }
    
-   // Abrir archivo en modo binario para escribir UTF-8 (igual que LectorOrdenes.mq4)
+   // Abrir archivo en modo binario para escribir UTF-8 (igual que ReadQueue lee)
    // Usar FILE_WRITE sin FILE_READ para truncar el archivo desde el inicio
    int handle = FileOpen(relPath, FILE_BIN|FILE_WRITE|FILE_COMMON);
    if(handle==INVALID_HANDLE)
@@ -1028,7 +1040,7 @@ void RewriteQueue(string relPath, string &lines[], int count)
    // Posicionar al inicio para sobrescribir (FILE_WRITE ya lo hace, pero por seguridad)
    FileSeek(handle, 0, SEEK_SET);
    
-   // Escribir cada línea en UTF-8 (igual que LectorOrdenes.mq4)
+   // Escribir cada línea en UTF-8 (igual que ReadQueue lee)
    for(int i=0;i<count;i++)
    {
       // Convertir línea a UTF-8 bytes
