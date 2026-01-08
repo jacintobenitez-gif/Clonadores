@@ -517,8 +517,8 @@ void WriteOpenLogToFile(string ticketMaestro, int ticketWorker, string symbol, i
    string timestamp = GetTimestampWithMillis();
    string line = ticketMaestro + ";" + IntegerToString(ticketWorker) + ";" + timestamp + ";" + symbol + ";" + IntegerToString(magic);
    
-   // Abrir archivo en modo append (crear si no existe)
-   int handle = FileOpen(relPath, FILE_WRITE | FILE_READ | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   // Abrir archivo en modo append (igual que AppendHistory)
+   int handle = FileOpen(relPath, FILE_READ | FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE)
    {
       Print("ERROR: No se pudo abrir archivo para escribir OPEN log: ", relPath, " err=", GetLastError());
@@ -528,10 +528,8 @@ void WriteOpenLogToFile(string ticketMaestro, int ticketWorker, string symbol, i
    // Ir al final del archivo
    FileSeek(handle, 0, SEEK_END);
    
-   // Escribir línea con UTF-8
-   uchar lineBytes[];
-   StringToUTF8Bytes(line + "\r\n", lineBytes);
-   FileWriteArray(handle, lineBytes);
+   // Escribir línea (igual que AppendHistory)
+   FileWrite(handle, line);
    
    FileClose(handle);
 }
@@ -545,106 +543,35 @@ int ReadOpenLogFromFile(string ticketMaestro)
    string filename = GetOpenLogsFileName();
    string relPath = CommonRelative(filename);
    
-   int handle = FileOpen(relPath, FILE_READ | FILE_BIN | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   // Leer archivo como texto (igual que otros archivos de texto)
+   int handle = FileOpen(relPath, FILE_READ | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE)
    {
       // Archivo no existe, no hay problema
       return(-1);
    }
    
-   // Obtener tamaño del archivo
-   int fileSize = (int)FileSize(handle);
-   if(fileSize == 0)
+   // Leer línea por línea
+   while(!FileIsEnding(handle))
    {
-      FileClose(handle);
-      return(-1);
+      string line = FileReadString(handle);
+      if(StringLen(line) == 0) continue;
+      
+      // Parsear línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
+      string parts[];
+      int count = StringSplit(line, ';', parts);
+      if(count >= 2)
+      {
+         if(parts[0] == ticketMaestro)
+         {
+            // Encontrado: retornar ticket_worker
+            FileClose(handle);
+            return((int)StrToInteger(parts[1]));
+         }
+      }
    }
    
-   // Leer archivo completo
-   uchar bytes[];
-   ArrayResize(bytes, fileSize);
-   uint bytesRead = FileReadArray(handle, bytes, 0, fileSize);
    FileClose(handle);
-   
-   if((int)bytesRead != fileSize)
-      return(-1);
-   
-   // Verificar y saltar BOM UTF-8 si existe
-   int bomSkip = 0;
-   if(fileSize >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-      bomSkip = 3;
-   
-   // Convertir bytes UTF-8 a líneas y buscar
-   int lineStart = bomSkip;
-   
-   while(lineStart < fileSize)
-   {
-      // Encontrar fin de línea
-      int lineEnd = lineStart;
-      bool foundEOL = false;
-      
-      for(int i = lineStart; i < fileSize; i++)
-      {
-         if(bytes[i] == 0x0A) // LF
-         {
-            lineEnd = i;
-            foundEOL = true;
-            break;
-         }
-         if(bytes[i] == 0x0D) // CR
-         {
-            lineEnd = i;
-            foundEOL = true;
-            break;
-         }
-         if(bytes[i] == 0) // Null terminator
-         {
-            lineEnd = i;
-            break;
-         }
-      }
-      
-      if(!foundEOL && lineEnd == lineStart)
-         lineEnd = fileSize; // Última línea sin salto
-      
-      // Convertir línea UTF-8 a string
-      if(lineEnd > lineStart)
-      {
-         uchar lineBytes[];
-         ArrayResize(lineBytes, lineEnd - lineStart);
-         ArrayCopy(lineBytes, bytes, 0, lineStart, lineEnd - lineStart);
-         string line = UTF8BytesToString(lineBytes);
-         
-         if(StringLen(line) > 0)
-         {
-            // Parsear línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
-            string parts[];
-            int count = StringSplit(line, ';', parts);
-            if(count >= 2)
-            {
-               if(parts[0] == ticketMaestro)
-               {
-                  // Encontrado: retornar ticket_worker
-                  return((int)StrToInteger(parts[1]));
-               }
-            }
-         }
-      }
-      
-      // Avanzar al siguiente carácter después del salto de línea
-      lineStart = lineEnd;
-      if(lineStart < fileSize)
-      {
-         // Saltar CRLF o LF
-         if(bytes[lineStart] == 0x0D && lineStart + 1 < fileSize && bytes[lineStart + 1] == 0x0A)
-            lineStart += 2;
-         else if(bytes[lineStart] == 0x0A || bytes[lineStart] == 0x0D)
-            lineStart++;
-      }
-      
-      if(lineStart >= fileSize) break;
-   }
-   
    return(-1); // No encontrado
 }
 
@@ -657,124 +584,52 @@ bool RemoveOpenLogFromFile(string ticketMaestro)
    string filename = GetOpenLogsFileName();
    string relPath = CommonRelative(filename);
    
-   int handle = FileOpen(relPath, FILE_READ | FILE_BIN | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   // Leer archivo como texto
+   int handle = FileOpen(relPath, FILE_READ | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE)
    {
       // Archivo no existe, no hay problema
       return(false);
    }
    
-   // Obtener tamaño del archivo
-   int fileSize = (int)FileSize(handle);
-   if(fileSize == 0)
-   {
-      FileClose(handle);
-      return(false);
-   }
-   
-   // Leer archivo completo
-   uchar bytes[];
-   ArrayResize(bytes, fileSize);
-   uint bytesRead = FileReadArray(handle, bytes, 0, fileSize);
-   FileClose(handle);
-   
-   if((int)bytesRead != fileSize)
-      return(false);
-   
-   // Verificar y saltar BOM UTF-8 si existe
-   int bomSkip = 0;
-   if(fileSize >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-      bomSkip = 3;
-   
    // Leer todas las líneas y guardar las que NO coincidan con ticketMaestro
    string lines[];
    int linesCount = 0;
    bool found = false;
    
-   // Convertir bytes UTF-8 a líneas
-   int lineStart = bomSkip;
-   
-   while(lineStart < fileSize)
+   while(!FileIsEnding(handle))
    {
-      // Encontrar fin de línea
-      int lineEnd = lineStart;
-      bool foundEOL = false;
+      string line = FileReadString(handle);
+      if(StringLen(line) == 0) continue;
       
-      for(int i = lineStart; i < fileSize; i++)
+      // Parsear línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
+      string parts[];
+      int count = StringSplit(line, ';', parts);
+      if(count >= 2)
       {
-         if(bytes[i] == 0x0A) // LF
+         if(parts[0] == ticketMaestro)
          {
-            lineEnd = i;
-            foundEOL = true;
-            break;
+            // Esta línea coincide: NO guardarla (eliminarla)
+            found = true;
          }
-         if(bytes[i] == 0x0D) // CR
+         else
          {
-            lineEnd = i;
-            foundEOL = true;
-            break;
-         }
-         if(bytes[i] == 0) // Null terminator
-         {
-            lineEnd = i;
-            break;
+            // Esta línea NO coincide: guardarla
+            ArrayResize(lines, linesCount + 1);
+            lines[linesCount] = line;
+            linesCount++;
          }
       }
-      
-      if(!foundEOL && lineEnd == lineStart)
-         lineEnd = fileSize; // Última línea sin salto
-      
-      // Convertir línea UTF-8 a string
-      if(lineEnd > lineStart)
+      else
       {
-         uchar lineBytes[];
-         ArrayResize(lineBytes, lineEnd - lineStart);
-         ArrayCopy(lineBytes, bytes, 0, lineStart, lineEnd - lineStart);
-         string line = UTF8BytesToString(lineBytes);
-         
-         if(StringLen(line) > 0)
-         {
-            // Parsear línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
-            string parts[];
-            int count = StringSplit(line, ';', parts);
-            if(count >= 2)
-            {
-               if(parts[0] == ticketMaestro)
-               {
-                  // Esta línea coincide: NO guardarla (eliminarla)
-                  found = true;
-               }
-               else
-               {
-                  // Esta línea NO coincide: guardarla
-                  ArrayResize(lines, linesCount + 1);
-                  lines[linesCount] = line;
-                  linesCount++;
-               }
-            }
-            else
-            {
-               // Línea inválida: guardarla de todas formas
-               ArrayResize(lines, linesCount + 1);
-               lines[linesCount] = line;
-               linesCount++;
-            }
-         }
+         // Línea inválida: guardarla de todas formas
+         ArrayResize(lines, linesCount + 1);
+         lines[linesCount] = line;
+         linesCount++;
       }
-      
-      // Avanzar al siguiente carácter después del salto de línea
-      lineStart = lineEnd;
-      if(lineStart < fileSize)
-      {
-         // Saltar CRLF o LF
-         if(bytes[lineStart] == 0x0D && lineStart + 1 < fileSize && bytes[lineStart + 1] == 0x0A)
-            lineStart += 2;
-         else if(bytes[lineStart] == 0x0A || bytes[lineStart] == 0x0D)
-            lineStart++;
-      }
-      
-      if(lineStart >= fileSize) break;
    }
+   
+   FileClose(handle);
    
    if(!found)
    {
@@ -782,8 +637,8 @@ bool RemoveOpenLogFromFile(string ticketMaestro)
       return(false);
    }
    
-   // Reescribir archivo sin la línea eliminada
-   handle = FileOpen(relPath, FILE_WRITE | FILE_BIN | FILE_COMMON | FILE_SHARE_WRITE);
+   // Reescribir archivo sin la línea eliminada (igual que RewriteQueue)
+   handle = FileOpen(relPath, FILE_WRITE | FILE_TXT | FILE_COMMON);
    if(handle == INVALID_HANDLE)
    {
       Print("ERROR: No se pudo reescribir archivo OPEN log: ", relPath, " err=", GetLastError());
@@ -793,9 +648,7 @@ bool RemoveOpenLogFromFile(string ticketMaestro)
    // Escribir todas las líneas restantes
    for(int i = 0; i < linesCount; i++)
    {
-      uchar lineBytes[];
-      StringToUTF8Bytes(lines[i] + "\r\n", lineBytes);
-      FileWriteArray(handle, lineBytes);
+      FileWrite(handle, lines[i]);
    }
    
    FileClose(handle);
@@ -1561,12 +1414,75 @@ void OnTimer()
             }
             else
             {
-               // ticketWorker no existe: ya está cerrada o nunca existió
-               AppendHistory("Operacion ya cerrada (ticketWorker no existe)", ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
-               RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
-               // Eliminar información de OPEN de memoria y archivo
-               RemoveOpenLog(ev.ticket);
-               RemoveOpenLogFromFile(ev.ticket);
+               // ticketWorker no existe: verificar si está en historial antes de eliminar
+               int historyTicket = FindOrderInHistory(ev.ticket);
+               if(historyTicket >= 0)
+               {
+                  // Encontrada en historial: confirmada cerrada, eliminar
+                  AppendHistory("Operacion ya cerrada (en historial)", ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
+                  RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                  RemoveOpenLog(ev.ticket);
+                  RemoveOpenLogFromFile(ev.ticket);
+               }
+               else
+               {
+                  // No está en historial: podría seguir abierta con otro ticket o el ticketWorker es incorrecto
+                  // Buscar por MagicNumber/Comment antes de eliminar
+                  int orderTicket = FindOpenOrder(ev.ticket);
+                  if(orderTicket >= 0)
+                  {
+                     // Encontrada por MagicNumber/Comment: el ticketWorker del archivo es incorrecto
+                     // Actualizar archivo con el ticket correcto y cerrar
+                     if(OrderSelect(orderTicket, SELECT_BY_TICKET))
+                     {
+                        int type = OrderType();
+                        double volume = OrderLots();
+                        double closePrice = (type==OP_BUY ? Bid : Ask);
+                        double profitBefore = OrderProfit();
+                        datetime closeTime = TimeCurrent();
+                        
+                        if(OrderClose(orderTicket, volume, closePrice, InpSlippage, clrNONE))
+                        {
+                           datetime execTime = TimeCurrent();
+                           long workerExecTimeMs = (long)(execTime * 1000) + (GetTickCount() % 1000);
+                           
+                           string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO (ticketWorker corregido): " + DoubleToString(volume,2) + " lots";
+                           Notify(ok);
+                           AppendHistory("CLOSE OK (ticketWorker corregido)", ev, 0, 0, closePrice, closeTime, profitBefore, workerReadTimeMs, workerExecTimeMs);
+                           RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                           RemoveOpenLog(ev.ticket);
+                           RemoveOpenLogFromFile(ev.ticket);
+                        }
+                        else
+                        {
+                           datetime execTime = TimeCurrent();
+                           long workerExecTimeMs = (long)(execTime * 1000) + (GetTickCount() % 1000);
+                           
+                           string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO (ticketWorker corregido)");
+                           if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
+                           {
+                              Notify(err);
+                              AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                           }
+                           AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore, workerReadTimeMs, workerExecTimeMs);
+                           // mantener para reintento (NO eliminar de memoria ni archivo)
+                           ArrayResize(remaining, remainingCount+1);
+                           remaining[remainingCount]=ev.originalLine;
+                           remainingCount++;
+                        }
+                     }
+                  }
+                  else
+                  {
+                     // No encontrada en ningún lugar: podría ser un error o la orden nunca existió
+                     // NO eliminar del archivo todavía, solo alertar
+                     string alerta = "ALERTA: Ticket " + ev.ticket + " no encontrado (ticketWorker=" + IntegerToString(ticketWorker) + " invalido)";
+                     Notify(alerta);
+                     AppendHistory(alerta, ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
+                     WriteCloseErrorToFile(ev);
+                     // NO eliminar del archivo: mantener para investigación
+                  }
+               }
             }
          }
          else
