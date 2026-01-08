@@ -9,8 +9,8 @@
 
 #include <Trade\Trade.mqh>
 
-input bool   InpFondeo        = true;
-input double InpLotMultiplier = 2.0;
+input bool   InpFondeo        = false;
+input double InpLotMultiplier = 1.0;
 input double InpFixedLots     = 0.10;
 input int    InpSlippage      = 30;     // puntos
 input ulong  InpMagicNumber   = 0;
@@ -502,28 +502,43 @@ void WriteOpenLogToFile(string ticketMaestro, ulong ticketWorker, string symbol,
    string filename = GetOpenLogsFileName();
    string relPath = CommonRelative(filename);
    
+   Print("[DEBUG] WriteOpenLogToFile: Intentando escribir. ticketMaestro=", ticketMaestro, " ticketWorker=", ticketWorker, " symbol=", symbol, " magic=", magic);
+   Print("[DEBUG] WriteOpenLogToFile: Ruta archivo=", relPath);
+   
    // Construir línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
    string timestamp = GetTimestampWithMillis();
    string line = ticketMaestro + ";" + IntegerToString(ticketWorker) + ";" + timestamp + ";" + symbol + ";" + IntegerToString(magic);
+   Print("[DEBUG] WriteOpenLogToFile: Línea a escribir=", line);
    
-   // Si el archivo no existe, crearlo primero (igual que EnsureHistoryHeader)
-   if(!FileIsExist(relPath, FILE_COMMON))
-   {
-      int h = FileOpen(relPath, FILE_WRITE|FILE_TXT|FILE_COMMON);
-      if(h == INVALID_HANDLE)
-      {
-         Print("ERROR: No se pudo crear archivo OPEN log: ", relPath, " err=", GetLastError());
-         return;
-      }
-      FileClose(h);
-   }
-   
-   // Abrir archivo en modo append (igual que AppendHistory)
+   // Intentar abrir archivo en modo append
    int handle = FileOpen(relPath, FILE_READ | FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE)
    {
-      Print("ERROR: No se pudo abrir archivo para escribir OPEN log: ", relPath, " err=", GetLastError());
-      return;
+      Print("[DEBUG] WriteOpenLogToFile: Archivo no existe, intentando crear. err=", GetLastError());
+      // Intentar crear archivo nuevo
+      handle = FileOpen(relPath, FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_WRITE);
+      if(handle == INVALID_HANDLE)
+      {
+         int errCode = GetLastError();
+         Print("ERROR: WriteOpenLogToFile: No se pudo crear archivo OPEN log: ", relPath, " err=", errCode, " desc=", ErrorText(errCode));
+         return;
+      }
+      Print("[DEBUG] WriteOpenLogToFile: Archivo creado exitosamente");
+      FileClose(handle);
+      
+      // Reabrir para append
+      handle = FileOpen(relPath, FILE_READ | FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_WRITE);
+      if(handle == INVALID_HANDLE)
+      {
+         int errCode = GetLastError();
+         Print("ERROR: WriteOpenLogToFile: No se pudo abrir archivo para escribir OPEN log: ", relPath, " err=", errCode, " desc=", ErrorText(errCode));
+         return;
+      }
+      Print("[DEBUG] WriteOpenLogToFile: Archivo reabierto para append");
+   }
+   else
+   {
+      Print("[DEBUG] WriteOpenLogToFile: Archivo abierto exitosamente para append");
    }
    
    // Ir al final del archivo
@@ -531,15 +546,17 @@ void WriteOpenLogToFile(string ticketMaestro, ulong ticketWorker, string symbol,
    
    // Escribir línea (igual que AppendHistory)
    FileWrite(handle, line);
+   Print("[DEBUG] WriteOpenLogToFile: Línea escrita exitosamente");
    
    FileClose(handle);
+   Print("[DEBUG] WriteOpenLogToFile: Archivo cerrado. OPEN log escrito exitosamente.");
 }
 
 //+------------------------------------------------------------------+
 //| Lee ticket_worker del archivo de persistencia                    |
-//| Retorna ticket_worker si encuentra, 0 si no encuentra          |
+//| Retorna ticket_worker si encuentra, -1 si no encuentra          |
 //+------------------------------------------------------------------+
-ulong ReadOpenLogFromFile(string ticketMaestro)
+long ReadOpenLogFromFile(string ticketMaestro)
 {
    string filename = GetOpenLogsFileName();
    string relPath = CommonRelative(filename);
@@ -549,7 +566,7 @@ ulong ReadOpenLogFromFile(string ticketMaestro)
    if(handle == INVALID_HANDLE)
    {
       // Archivo no existe, no hay problema
-      return(0);
+      return(-1);
    }
    
    // Leer línea por línea
@@ -573,7 +590,7 @@ ulong ReadOpenLogFromFile(string ticketMaestro)
    }
    
    FileClose(handle);
-   return(0); // No encontrado
+   return(-1); // No encontrado
 }
 
 //+------------------------------------------------------------------+
@@ -1506,7 +1523,7 @@ void OnTimer()
       }
       else if(ev.eventType=="CLOSE")
       {
-         ulong ticketWorker = 0;
+         long ticketWorker = -1;
          bool foundInMemory = false;
          bool foundInFile = false;
          
@@ -1514,21 +1531,21 @@ void OnTimer()
          OpenLogInfo openInfo = GetOpenLog(ev.ticket);
          if(openInfo.ticketMaestro != "")
          {
-            ticketWorker = openInfo.ticketWorker;
+            ticketWorker = (long)openInfo.ticketWorker;
             foundInMemory = true;
          }
          else
          {
             // Paso 2: Buscar en archivo de persistencia
             ticketWorker = ReadOpenLogFromFile(ev.ticket);
-            if(ticketWorker > 0)
+            if(ticketWorker >= 0)
             {
                foundInFile = true;
             }
          }
          
          // Si encontramos ticketWorker (memoria o archivo), intentar cerrar directamente
-         if(ticketWorker > 0)
+         if(ticketWorker >= 0)
          {
             if(PositionSelectByTicket(ticketWorker))
             {

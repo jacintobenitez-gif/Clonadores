@@ -513,16 +513,43 @@ void WriteOpenLogToFile(string ticketMaestro, int ticketWorker, string symbol, i
    string filename = GetOpenLogsFileName();
    string relPath = CommonRelative(filename);
    
+   Print("[DEBUG] WriteOpenLogToFile: Intentando escribir. ticketMaestro=", ticketMaestro, " ticketWorker=", ticketWorker, " symbol=", symbol, " magic=", magic);
+   Print("[DEBUG] WriteOpenLogToFile: Ruta archivo=", relPath);
+   
    // Construir línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
    string timestamp = GetTimestampWithMillis();
    string line = ticketMaestro + ";" + IntegerToString(ticketWorker) + ";" + timestamp + ";" + symbol + ";" + IntegerToString(magic);
+   Print("[DEBUG] WriteOpenLogToFile: Línea a escribir=", line);
    
-   // Abrir archivo en modo append (igual que AppendHistory)
+   // Intentar abrir archivo en modo append
    int handle = FileOpen(relPath, FILE_READ | FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE)
    {
-      Print("ERROR: No se pudo abrir archivo para escribir OPEN log: ", relPath, " err=", GetLastError());
-      return;
+      Print("[DEBUG] WriteOpenLogToFile: Archivo no existe, intentando crear. err=", GetLastError());
+      // Intentar crear archivo nuevo
+      handle = FileOpen(relPath, FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_WRITE);
+      if(handle == INVALID_HANDLE)
+      {
+         int errCode = GetLastError();
+         Print("ERROR: WriteOpenLogToFile: No se pudo crear archivo OPEN log: ", relPath, " err=", errCode, " desc=", ErrorText(errCode));
+         return;
+      }
+      Print("[DEBUG] WriteOpenLogToFile: Archivo creado exitosamente");
+      FileClose(handle);
+      
+      // Reabrir para append
+      handle = FileOpen(relPath, FILE_READ | FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_WRITE);
+      if(handle == INVALID_HANDLE)
+      {
+         int errCode = GetLastError();
+         Print("ERROR: WriteOpenLogToFile: No se pudo abrir archivo para escribir OPEN log: ", relPath, " err=", errCode, " desc=", ErrorText(errCode));
+         return;
+      }
+      Print("[DEBUG] WriteOpenLogToFile: Archivo reabierto para append");
+   }
+   else
+   {
+      Print("[DEBUG] WriteOpenLogToFile: Archivo abierto exitosamente para append");
    }
    
    // Ir al final del archivo
@@ -530,8 +557,10 @@ void WriteOpenLogToFile(string ticketMaestro, int ticketWorker, string symbol, i
    
    // Escribir línea (igual que AppendHistory)
    FileWrite(handle, line);
+   Print("[DEBUG] WriteOpenLogToFile: Línea escrita exitosamente");
    
    FileClose(handle);
+   Print("[DEBUG] WriteOpenLogToFile: Archivo cerrado. OPEN log escrito exitosamente.");
 }
 
 //+------------------------------------------------------------------+
