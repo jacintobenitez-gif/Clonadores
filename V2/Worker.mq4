@@ -249,7 +249,7 @@ string StringToBytes(string s)
 //+------------------------------------------------------------------+
 //| Añade información de OPEN exitoso a memoria                     |
 //+------------------------------------------------------------------+
-void AddOpenLog(EventRec &ev, int ticketWorker, int ordersTotalBefore)
+void AddOpenLog(EventRec &ev, int ticketWorker, int ordersTotalBefore, bool verifyOK, string verifyCommentRead, bool verifyCommentMatch, int verifyDelayMs)
 {
    if(g_openLogsCount >= 100) return;  // Límite de seguridad
    
@@ -268,34 +268,13 @@ void AddOpenLog(EventRec &ev, int ticketWorker, int ordersTotalBefore)
    g_openLogs[g_openLogsCount].ordersTotalBefore = ordersTotalBefore;
    g_openLogs[g_openLogsCount].ordersTotalAfter = ordersTotalAfter;
    
-   // Verificación inmediata
+   // Guardar resultados de verificación (ya realizada externamente)
    string tsVerify = GetTimestampWithMillis();
-   if(OrderSelect(ticketWorker, SELECT_BY_TICKET))
-   {
-      string commentRead = OrderComment();
-      commentRead = Trim(commentRead);
-      string commentSentTrimmed = Trim(commentSent);
-      bool match = (commentRead == commentSentTrimmed);
-      int delay = (int)(GetTickCount() % 1000);
-      
-      g_openLogs[g_openLogsCount].timestampVerify = tsVerify;
-      g_openLogs[g_openLogsCount].verifyOrderSelectOK = true;
-      g_openLogs[g_openLogsCount].verifyCommentRead = commentRead;
-      g_openLogs[g_openLogsCount].verifyCommentMatch = match;
-      g_openLogs[g_openLogsCount].verifyDelayMs = delay;
-   }
-   else
-   {
-      g_openLogs[g_openLogsCount].timestampVerify = tsVerify;
-      g_openLogs[g_openLogsCount].verifyOrderSelectOK = false;
-      g_openLogs[g_openLogsCount].verifyCommentRead = "";
-      g_openLogs[g_openLogsCount].verifyCommentMatch = false;
-      g_openLogs[g_openLogsCount].verifyDelayMs = (int)(GetTickCount() % 1000);
-      
-      // Alerta: OPEN exitoso pero verificación inmediata falló
-      string alerta = "ALERTA: OPEN ticket " + ev.ticket + " exitoso pero OrderSelect falló. Ticket worker: " + IntegerToString(ticketWorker);
-      Notify(alerta);
-   }
+   g_openLogs[g_openLogsCount].timestampVerify = tsVerify;
+   g_openLogs[g_openLogsCount].verifyOrderSelectOK = verifyOK;
+   g_openLogs[g_openLogsCount].verifyCommentRead = verifyCommentRead;
+   g_openLogs[g_openLogsCount].verifyCommentMatch = verifyCommentMatch;
+   g_openLogs[g_openLogsCount].verifyDelayMs = verifyDelayMs;
    
    g_openLogsCount++;
 }
@@ -1085,11 +1064,40 @@ void OnTimer()
          }
          else
          {
+            // Verificación inmediata antes de enviar notificación
+            string tsVerify = GetTimestampWithMillis();
+            bool verifyOK = false;
+            string verifyCommentRead = "";
+            bool verifyCommentMatch = false;
+            int verifyDelayMs = (int)(GetTickCount() % 1000);
+            
+            if(OrderSelect(ticketNew, SELECT_BY_TICKET))
+            {
+               verifyCommentRead = OrderComment();
+               verifyCommentRead = Trim(verifyCommentRead);
+               string commentSentTrimmed = Trim(ev.ticket);
+               verifyCommentMatch = (verifyCommentRead == commentSentTrimmed);
+               verifyOK = true;
+               verifyDelayMs = (int)(GetTickCount() % 1000);
+            }
+            else
+            {
+               verifyOK = false;
+               verifyDelayMs = (int)(GetTickCount() % 1000);
+            }
+            
+            // Construir mensaje con resultado de verificación
             string ok = "Ticket: " + ev.ticket + " - OPEN EXITOSO: " + ev.symbol + " " + ev.orderType + " " + DoubleToString(lotsWorker,2) + " lots";
+            if(verifyOK && verifyCommentMatch)
+               ok += " VERIFICADO";
+            else
+               ok += " NO VERIFICADO";
+            
             Notify(ok);
             AppendHistory("EXITOSO", ev, 0, 0, 0, 0, 0);
-            // Guardar información de OPEN en memoria
-            AddOpenLog(ev, ticketNew, ordersTotalBefore);
+            
+            // Guardar información de OPEN en memoria (con resultados de verificación)
+            AddOpenLog(ev, ticketNew, ordersTotalBefore, verifyOK, verifyCommentRead, verifyCommentMatch, verifyDelayMs);
          }
       }
       else if(ev.eventType=="CLOSE")

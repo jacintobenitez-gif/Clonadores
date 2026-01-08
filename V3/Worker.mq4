@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-input bool   InpFondeo        = true;
+input bool   InpFondeo        = false;
 input double InpLotMultiplier = 1.0;
 input double InpFixedLots     = 0.10;
 input int    InpSlippage      = 30;     // pips
@@ -273,6 +273,9 @@ void AddOpenLog(EventRec &ev, int ticketWorker, int ordersTotalBefore, bool veri
    g_openLogs[g_openLogsCount].verifyDelayMs = verifyDelayMs;
    
    g_openLogsCount++;
+   
+   // Escribir también al archivo de persistencia
+   WriteOpenLogToFile(ev.ticket, ticketWorker, ev.symbol, magicSent);
 }
 
 //+------------------------------------------------------------------+
@@ -495,6 +498,311 @@ string CommonRelative(const string filename)
 }
 
 //+------------------------------------------------------------------+
+//| Obtiene el nombre del archivo de persistencia de OPEN logs       |
+//+------------------------------------------------------------------+
+string GetOpenLogsFileName()
+{
+   return("open_logs_" + g_workerId + ".csv");
+}
+
+//+------------------------------------------------------------------+
+//| Escribe información de OPEN al archivo de persistencia          |
+//+------------------------------------------------------------------+
+void WriteOpenLogToFile(string ticketMaestro, int ticketWorker, string symbol, int magic)
+{
+   string filename = GetOpenLogsFileName();
+   string relPath = CommonRelative(filename);
+   
+   // Construir línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
+   string timestamp = GetTimestampWithMillis();
+   string line = ticketMaestro + ";" + IntegerToString(ticketWorker) + ";" + timestamp + ";" + symbol + ";" + IntegerToString(magic);
+   
+   // Abrir archivo en modo append (crear si no existe)
+   int handle = FileOpen(relPath, FILE_WRITE | FILE_READ | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(handle == INVALID_HANDLE)
+   {
+      Print("ERROR: No se pudo abrir archivo para escribir OPEN log: ", relPath, " err=", GetLastError());
+      return;
+   }
+   
+   // Ir al final del archivo
+   FileSeek(handle, 0, SEEK_END);
+   
+   // Escribir línea con UTF-8
+   uchar lineBytes[];
+   StringToUTF8Bytes(line + "\r\n", lineBytes);
+   FileWriteArray(handle, lineBytes);
+   
+   FileClose(handle);
+}
+
+//+------------------------------------------------------------------+
+//| Lee ticket_worker del archivo de persistencia                    |
+//| Retorna ticket_worker si encuentra, -1 si no encuentra          |
+//+------------------------------------------------------------------+
+int ReadOpenLogFromFile(string ticketMaestro)
+{
+   string filename = GetOpenLogsFileName();
+   string relPath = CommonRelative(filename);
+   
+   int handle = FileOpen(relPath, FILE_READ | FILE_BIN | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(handle == INVALID_HANDLE)
+   {
+      // Archivo no existe, no hay problema
+      return(-1);
+   }
+   
+   // Obtener tamaño del archivo
+   int fileSize = (int)FileSize(handle);
+   if(fileSize == 0)
+   {
+      FileClose(handle);
+      return(-1);
+   }
+   
+   // Leer archivo completo
+   uchar bytes[];
+   ArrayResize(bytes, fileSize);
+   uint bytesRead = FileReadArray(handle, bytes, 0, fileSize);
+   FileClose(handle);
+   
+   if((int)bytesRead != fileSize)
+      return(-1);
+   
+   // Verificar y saltar BOM UTF-8 si existe
+   int bomSkip = 0;
+   if(fileSize >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+      bomSkip = 3;
+   
+   // Convertir bytes UTF-8 a líneas y buscar
+   int lineStart = bomSkip;
+   
+   while(lineStart < fileSize)
+   {
+      // Encontrar fin de línea
+      int lineEnd = lineStart;
+      bool foundEOL = false;
+      
+      for(int i = lineStart; i < fileSize; i++)
+      {
+         if(bytes[i] == 0x0A) // LF
+         {
+            lineEnd = i;
+            foundEOL = true;
+            break;
+         }
+         if(bytes[i] == 0x0D) // CR
+         {
+            lineEnd = i;
+            foundEOL = true;
+            break;
+         }
+         if(bytes[i] == 0) // Null terminator
+         {
+            lineEnd = i;
+            break;
+         }
+      }
+      
+      if(!foundEOL && lineEnd == lineStart)
+         lineEnd = fileSize; // Última línea sin salto
+      
+      // Convertir línea UTF-8 a string
+      if(lineEnd > lineStart)
+      {
+         uchar lineBytes[];
+         ArrayResize(lineBytes, lineEnd - lineStart);
+         ArrayCopy(lineBytes, bytes, 0, lineStart, lineEnd - lineStart);
+         string line = UTF8BytesToString(lineBytes);
+         
+         if(StringLen(line) > 0)
+         {
+            // Parsear línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
+            string parts[];
+            int count = StringSplit(line, ';', parts);
+            if(count >= 2)
+            {
+               if(parts[0] == ticketMaestro)
+               {
+                  // Encontrado: retornar ticket_worker
+                  return((int)StrToInteger(parts[1]));
+               }
+            }
+         }
+      }
+      
+      // Avanzar al siguiente carácter después del salto de línea
+      lineStart = lineEnd;
+      if(lineStart < fileSize)
+      {
+         // Saltar CRLF o LF
+         if(bytes[lineStart] == 0x0D && lineStart + 1 < fileSize && bytes[lineStart + 1] == 0x0A)
+            lineStart += 2;
+         else if(bytes[lineStart] == 0x0A || bytes[lineStart] == 0x0D)
+            lineStart++;
+      }
+      
+      if(lineStart >= fileSize) break;
+   }
+   
+   return(-1); // No encontrado
+}
+
+//+------------------------------------------------------------------+
+//| Elimina línea del archivo de persistencia                        |
+//| Retorna true si eliminó, false si no encontró                    |
+//+------------------------------------------------------------------+
+bool RemoveOpenLogFromFile(string ticketMaestro)
+{
+   string filename = GetOpenLogsFileName();
+   string relPath = CommonRelative(filename);
+   
+   int handle = FileOpen(relPath, FILE_READ | FILE_BIN | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(handle == INVALID_HANDLE)
+   {
+      // Archivo no existe, no hay problema
+      return(false);
+   }
+   
+   // Obtener tamaño del archivo
+   int fileSize = (int)FileSize(handle);
+   if(fileSize == 0)
+   {
+      FileClose(handle);
+      return(false);
+   }
+   
+   // Leer archivo completo
+   uchar bytes[];
+   ArrayResize(bytes, fileSize);
+   uint bytesRead = FileReadArray(handle, bytes, 0, fileSize);
+   FileClose(handle);
+   
+   if((int)bytesRead != fileSize)
+      return(false);
+   
+   // Verificar y saltar BOM UTF-8 si existe
+   int bomSkip = 0;
+   if(fileSize >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+      bomSkip = 3;
+   
+   // Leer todas las líneas y guardar las que NO coincidan con ticketMaestro
+   string lines[];
+   int linesCount = 0;
+   bool found = false;
+   
+   // Convertir bytes UTF-8 a líneas
+   int lineStart = bomSkip;
+   
+   while(lineStart < fileSize)
+   {
+      // Encontrar fin de línea
+      int lineEnd = lineStart;
+      bool foundEOL = false;
+      
+      for(int i = lineStart; i < fileSize; i++)
+      {
+         if(bytes[i] == 0x0A) // LF
+         {
+            lineEnd = i;
+            foundEOL = true;
+            break;
+         }
+         if(bytes[i] == 0x0D) // CR
+         {
+            lineEnd = i;
+            foundEOL = true;
+            break;
+         }
+         if(bytes[i] == 0) // Null terminator
+         {
+            lineEnd = i;
+            break;
+         }
+      }
+      
+      if(!foundEOL && lineEnd == lineStart)
+         lineEnd = fileSize; // Última línea sin salto
+      
+      // Convertir línea UTF-8 a string
+      if(lineEnd > lineStart)
+      {
+         uchar lineBytes[];
+         ArrayResize(lineBytes, lineEnd - lineStart);
+         ArrayCopy(lineBytes, bytes, 0, lineStart, lineEnd - lineStart);
+         string line = UTF8BytesToString(lineBytes);
+         
+         if(StringLen(line) > 0)
+         {
+            // Parsear línea: ticket_maestro;ticket_worker;timestamp;symbol;magic
+            string parts[];
+            int count = StringSplit(line, ';', parts);
+            if(count >= 2)
+            {
+               if(parts[0] == ticketMaestro)
+               {
+                  // Esta línea coincide: NO guardarla (eliminarla)
+                  found = true;
+               }
+               else
+               {
+                  // Esta línea NO coincide: guardarla
+                  ArrayResize(lines, linesCount + 1);
+                  lines[linesCount] = line;
+                  linesCount++;
+               }
+            }
+            else
+            {
+               // Línea inválida: guardarla de todas formas
+               ArrayResize(lines, linesCount + 1);
+               lines[linesCount] = line;
+               linesCount++;
+            }
+         }
+      }
+      
+      // Avanzar al siguiente carácter después del salto de línea
+      lineStart = lineEnd;
+      if(lineStart < fileSize)
+      {
+         // Saltar CRLF o LF
+         if(bytes[lineStart] == 0x0D && lineStart + 1 < fileSize && bytes[lineStart + 1] == 0x0A)
+            lineStart += 2;
+         else if(bytes[lineStart] == 0x0A || bytes[lineStart] == 0x0D)
+            lineStart++;
+      }
+      
+      if(lineStart >= fileSize) break;
+   }
+   
+   if(!found)
+   {
+      // No se encontró la línea, no hay nada que hacer
+      return(false);
+   }
+   
+   // Reescribir archivo sin la línea eliminada
+   handle = FileOpen(relPath, FILE_WRITE | FILE_BIN | FILE_COMMON | FILE_SHARE_WRITE);
+   if(handle == INVALID_HANDLE)
+   {
+      Print("ERROR: No se pudo reescribir archivo OPEN log: ", relPath, " err=", GetLastError());
+      return(false);
+   }
+   
+   // Escribir todas las líneas restantes
+   for(int i = 0; i < linesCount; i++)
+   {
+      uchar lineBytes[];
+      StringToUTF8Bytes(lines[i] + "\r\n", lineBytes);
+      FileWriteArray(handle, lineBytes);
+   }
+   
+   FileClose(handle);
+   return(true);
+}
+
+//+------------------------------------------------------------------+
 //| Ajusta lote fijo a min/max/step del símbolo destino             |
 //| SIEMPRE se aplica para proteger las cuentas                     |
 //+------------------------------------------------------------------+
@@ -711,7 +1019,7 @@ int ReadQueue(string relPath, string &lines[])
    uint bytesRead = FileReadArray(handle, bytes, 0, fileSize);
    FileClose(handle);
    
-   if(bytesRead != fileSize)
+   if((int)bytesRead != fileSize)
       return(0);
    
    // Verificar y saltar BOM UTF-8 si existe
@@ -817,14 +1125,14 @@ void EnsureHistoryHeader(string relPath)
       Print("No se pudo crear historico: ", relPath, " err=", GetLastError());
       return;
    }
-   FileWrite(h, "timestamp_ejecucion;resultado;event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit");
+   FileWrite(h, "worker_exec_time;worker_read_time;resultado;event_type;ticket;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit");
    FileClose(h);
 }
 
 //+------------------------------------------------------------------+
 //| Añade línea al histórico                                         |
 //+------------------------------------------------------------------+
-void AppendHistory(const string result, const EventRec &ev, double openPrice=0.0, datetime openTime=0, double closePrice=0.0, datetime closeTime=0, double profit=0.0)
+void AppendHistory(const string result, const EventRec &ev, double openPrice=0.0, datetime openTime=0, double closePrice=0.0, datetime closeTime=0, double profit=0.0, long workerReadTimeMs=0, long workerExecTimeMs=0)
 {
    EnsureHistoryHeader(g_historyFile);
    int h = FileOpen(g_historyFile, FILE_READ|FILE_WRITE|FILE_TXT|FILE_COMMON|FILE_SHARE_WRITE);
@@ -836,7 +1144,6 @@ void AppendHistory(const string result, const EventRec &ev, double openPrice=0.0
    FileSeek(h, 0, SEEK_END);
    int symDigits = (int)MarketInfo(ev.symbol, MODE_DIGITS);
    if(symDigits<=0) symDigits = Digits;
-   string ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
    string sOpenPrice  = (openPrice!=0.0 ? DoubleToString(openPrice, symDigits) : "");
    string sOpenTime   = (openTime>0 ? TimeToString(openTime, TIME_DATE|TIME_SECONDS) : "");
    string sClosePrice = (closePrice!=0.0 ? DoubleToString(closePrice, symDigits) : "");
@@ -844,7 +1151,9 @@ void AppendHistory(const string result, const EventRec &ev, double openPrice=0.0
    string sSl = (ev.sl>0 ? DoubleToString(ev.sl, symDigits) : "");
    string sTp = (ev.tp>0 ? DoubleToString(ev.tp, symDigits) : "");
    string sProfit = (closeTime>0 ? DoubleToString(profit, 2) : "");
-   string line = ts + ";" + result + ";" + ev.eventType + ";" + ev.ticket + ";" + ev.orderType + ";" +
+   string sWorkerReadTime = (workerReadTimeMs>0 ? IntegerToString(workerReadTimeMs) : "");
+   string sWorkerExecTime = (workerExecTimeMs>0 ? IntegerToString(workerExecTimeMs) : "");
+   string line = sWorkerExecTime + ";" + sWorkerReadTime + ";" + result + ";" + ev.eventType + ";" + ev.ticket + ";" + ev.orderType + ";" +
                  DoubleToString(ev.lots, 2) + ";" + ev.symbol + ";" +
                  sOpenPrice + ";" + sOpenTime + ";" + sSl + ";" + sTp + ";" +
                  sClosePrice + ";" + sCloseTime + ";" + sProfit;
@@ -1047,6 +1356,10 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
+   // Capturar worker_read_time cuando se lee la cola (milisegundos desde epoch)
+   datetime currentTime = TimeCurrent();
+   long workerReadTimeMs = (long)(currentTime * 1000) + (GetTickCount() % 1000);
+   
    string lines[];
    int total = ReadQueue(g_queueFile, lines);
    if(total==0)
@@ -1094,7 +1407,7 @@ void OnTimer()
             string msg = "Ticket: " + ev.ticket + " - OPEN FALLO: SymbolSelect (" + IntegerToString(errCodeSym) + ") " + errDescSym;
             Print("[ERROR] OnTimer: ", msg);
             Notify(msg);
-            AppendHistory(msg, ev, 0, 0, 0, 0, 0);
+            AppendHistory(msg, ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             continue; // OPEN no se reintenta
          }
          Print("[DEBUG] OnTimer: SymbolSelect exitoso para symbol=", ev.symbol);
@@ -1105,7 +1418,7 @@ void OnTimer()
          if(existingOrder >= 0)
          {
             Print("[DEBUG] OnTimer: Ya existe orden abierta con ticket=", ev.ticket, " orderTicket=", existingOrder, ", saltando OPEN");
-            AppendHistory("Ya existe operacion abierta", ev, 0, 0, 0, 0, 0);
+            AppendHistory("Ya existe operacion abierta", ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             continue; // Saltar esta línea, no reintentar
          }
          
@@ -1121,6 +1434,11 @@ void OnTimer()
          ResetLastError();
          int ordersTotalBefore = OrdersTotal();
          int ticketNew = OrderSend(ev.symbol, type, lotsWorker, price, InpSlippage, ev.sl, ev.tp, ev.ticket, magicOrigen, 0, clrNONE);
+         
+         // Capturar worker_exec_time después de OrderSend (milisegundos desde epoch)
+         datetime execTime = TimeCurrent();
+         long workerExecTimeMs = (long)(execTime * 1000) + (GetTickCount() % 1000);
+         
          Print("[DEBUG] OnTimer: OrderSend retornó ticketNew=", ticketNew);
          if(ticketNew<0)
          {
@@ -1131,7 +1449,7 @@ void OnTimer()
             string err = "Ticket: " + ev.ticket + " - " + errBase;
             Notify(err);
             // En el histórico dejamos el texto de error base (código + descripción)
-            AppendHistory(errBase, ev, 0, 0, 0, 0, 0);
+            AppendHistory(errBase, ev, 0, 0, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
             // no reintento
          }
          else
@@ -1165,7 +1483,7 @@ void OnTimer()
                ok += " NO VERIFICADO";
             
             Notify(ok);
-            AppendHistory("EXITOSO", ev, 0, 0, 0, 0, 0);
+            AppendHistory("EXITOSO", ev, 0, 0, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
             
             // Guardar información de OPEN en memoria (con resultados de verificación)
             AddOpenLog(ev, ticketNew, ordersTotalBefore, verifyOK, verifyMagicRead, verifyMagicMatch, verifyDelayMs);
@@ -1173,122 +1491,163 @@ void OnTimer()
       }
       else if(ev.eventType=="CLOSE")
       {
-         // Paso 1: Buscar en órdenes abiertas (MODE_TRADES)
-         int orderTicket = FindOpenOrder(ev.ticket);
-         if(orderTicket >= 0)
+         int ticketWorker = -1;
+         bool foundInMemory = false;
+         bool foundInFile = false;
+         
+         // Paso 1: Buscar en memoria (g_openLogs) - más rápido
+         OpenLogInfo openInfo = GetOpenLog(ev.ticket);
+         if(openInfo.ticketMaestro != "")
          {
-            // Encontrada en abiertas: seleccionar y cerrar
-            if(!OrderSelect(orderTicket, SELECT_BY_TICKET))
+            ticketWorker = openInfo.ticketWorker;
+            foundInMemory = true;
+         }
+         else
+         {
+            // Paso 2: Buscar en archivo de persistencia
+            ticketWorker = ReadOpenLogFromFile(ev.ticket);
+            if(ticketWorker >= 0)
             {
-               AppendHistory(FormatLastError("ERROR: CLOSE select"), ev, 0, 0, 0, 0, 0);
-               // mantener para reintento
-               ArrayResize(remaining, remainingCount+1);
-               remaining[remainingCount]=ev.originalLine;
-               remainingCount++;
-               continue;
+               foundInFile = true;
             }
-            int type = OrderType();
-            double volume = OrderLots();
-            double closePrice = (type==OP_BUY ? Bid : Ask);
-            double profitBefore = OrderProfit();
-            datetime closeTime = TimeCurrent();
-            if(OrderClose(orderTicket, volume, closePrice, InpSlippage, clrNONE))
+         }
+         
+         // Si encontramos ticketWorker (memoria o archivo), intentar cerrar directamente
+         if(ticketWorker >= 0)
+         {
+            if(OrderSelect(ticketWorker, SELECT_BY_TICKET))
             {
-               string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO: " + DoubleToString(volume,2) + " lots";
-               Notify(ok);
-               AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore);
-               RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
-               // Eliminar información de OPEN de memoria
-               RemoveOpenLog(ev.ticket);
+               // Orden encontrada y seleccionada: cerrar
+               int type = OrderType();
+               double volume = OrderLots();
+               double closePrice = (type==OP_BUY ? Bid : Ask);
+               double profitBefore = OrderProfit();
+               datetime closeTime = TimeCurrent();
+               
+               if(OrderClose(ticketWorker, volume, closePrice, InpSlippage, clrNONE))
+               {
+                  // Capturar worker_exec_time después de OrderClose
+                  datetime execTime = TimeCurrent();
+                  long workerExecTimeMs = (long)(execTime * 1000) + (GetTickCount() % 1000);
+                  
+                  string source = (foundInMemory ? "memoria" : "archivo");
+                  string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO (por ticketWorker desde " + source + "): " + DoubleToString(volume,2) + " lots";
+                  Notify(ok);
+                  AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore, workerReadTimeMs, workerExecTimeMs);
+                  RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                  // Eliminar información de OPEN de memoria y archivo
+                  RemoveOpenLog(ev.ticket);
+                  RemoveOpenLogFromFile(ev.ticket);
+               }
+               else
+               {
+                  // Capturar worker_exec_time después de OrderClose (aunque haya fallado)
+                  datetime execTime = TimeCurrent();
+                  long workerExecTimeMs = (long)(execTime * 1000) + (GetTickCount() % 1000);
+                  
+                  string source = (foundInMemory ? "memoria" : "archivo");
+                  string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO (por ticketWorker desde " + source + ")");
+                  if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
+                  {
+                     Notify(err);
+                     AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                  }
+                  AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore, workerReadTimeMs, workerExecTimeMs);
+                  // mantener para reintento (NO eliminar de memoria ni archivo)
+                  ArrayResize(remaining, remainingCount+1);
+                  remaining[remainingCount]=ev.originalLine;
+                  remainingCount++;
+               }
             }
             else
             {
-               string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO");
-               if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
-               {
-                  Notify(err);
-                  AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
-               }
-               AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore);
-               // mantener para reintento
-               ArrayResize(remaining, remainingCount+1);
-               remaining[remainingCount]=ev.originalLine;
-               remainingCount++;
+               // ticketWorker no existe: ya está cerrada o nunca existió
+               AppendHistory("Operacion ya cerrada (ticketWorker no existe)", ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
+               RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+               // Eliminar información de OPEN de memoria y archivo
+               RemoveOpenLog(ev.ticket);
+               RemoveOpenLogFromFile(ev.ticket);
             }
          }
          else
          {
-            // Paso 2: No encontrada en abiertas, buscar en historial (MODE_HISTORY)
-            int historyTicket = FindOrderInHistory(ev.ticket);
-            if(historyTicket >= 0)
+            // Paso 3: No encontrado en memoria ni archivo, buscar por MagicNumber/Comment (fallback)
+            int orderTicket = FindOpenOrder(ev.ticket);
+            if(orderTicket >= 0)
             {
-               // Encontrada en historial: ya está cerrada
-               AppendHistory("Operacion ya esta cerrada", ev, 0, 0, 0, 0, 0);
-               RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
-               // Eliminar información de OPEN de memoria
-               RemoveOpenLog(ev.ticket);
-            }
-            else
-            {
-               // Paso 3: Buscar en memoria (g_openLogs) usando ticketWorker almacenado
-               OpenLogInfo openInfo = GetOpenLog(ev.ticket);
-               if(openInfo.ticketMaestro != "")
+               // Encontrada en abiertas: seleccionar y cerrar
+               if(!OrderSelect(orderTicket, SELECT_BY_TICKET))
                {
-                  // Encontrado en memoria: intentar cerrar usando ticketWorker directamente
-                  int ticketWorker = openInfo.ticketWorker;
-                  if(OrderSelect(ticketWorker, SELECT_BY_TICKET))
-                  {
-                     // Orden encontrada y seleccionada: cerrar
-                     int type = OrderType();
-                     double volume = OrderLots();
-                     double closePrice = (type==OP_BUY ? Bid : Ask);
-                     double profitBefore = OrderProfit();
-                     datetime closeTime = TimeCurrent();
-                     if(OrderClose(ticketWorker, volume, closePrice, InpSlippage, clrNONE))
-                     {
-                        string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO (por ticketWorker): " + DoubleToString(volume,2) + " lots";
-                        Notify(ok);
-                        AppendHistory("CLOSE OK (por ticketWorker)", ev, 0, 0, closePrice, closeTime, profitBefore);
-                        RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
-                        // Eliminar información de OPEN de memoria
-                        RemoveOpenLog(ev.ticket);
-                     }
-                     else
-                     {
-                        string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO (por ticketWorker)");
-                        if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
-                        {
-                           Notify(err);
-                           AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
-                        }
-                        AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore);
-                        // mantener para reintento
-                        ArrayResize(remaining, remainingCount+1);
-                        remaining[remainingCount]=ev.originalLine;
-                        remainingCount++;
-                     }
-                  }
-                  else
-                  {
-                     // ticketWorker encontrado pero orden ya no existe (probablemente cerrada)
-                     AppendHistory("Operacion ya esta cerrada (ticketWorker no encontrado)", ev, 0, 0, 0, 0, 0);
-                     RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
-                     // Eliminar información de OPEN de memoria
-                     RemoveOpenLog(ev.ticket);
-                  }
+                  AppendHistory(FormatLastError("ERROR: CLOSE select"), ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
+                  // mantener para reintento
+                  ArrayResize(remaining, remainingCount+1);
+                  remaining[remainingCount]=ev.originalLine;
+                  remainingCount++;
+                  continue;
+               }
+               int type = OrderType();
+               double volume = OrderLots();
+               double closePrice = (type==OP_BUY ? Bid : Ask);
+               double profitBefore = OrderProfit();
+               datetime closeTime = TimeCurrent();
+               if(OrderClose(orderTicket, volume, closePrice, InpSlippage, clrNONE))
+               {
+                  // Capturar worker_exec_time después de OrderClose
+                  datetime execTime = TimeCurrent();
+                  long workerExecTimeMs = (long)(execTime * 1000) + (GetTickCount() % 1000);
+                  
+                  string ok = "Ticket: " + ev.ticket + " - CLOSE EXITOSO (por MagicNumber/Comment): " + DoubleToString(volume,2) + " lots";
+                  Notify(ok);
+                  AppendHistory("CLOSE OK", ev, 0, 0, closePrice, closeTime, profitBefore, workerReadTimeMs, workerExecTimeMs);
+                  RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                  // Eliminar información de OPEN de memoria y archivo
+                  RemoveOpenLog(ev.ticket);
+                  RemoveOpenLogFromFile(ev.ticket);
                }
                else
                {
-                  // Si no se encuentra en ningún lado, enviar alerta y registrar en histórico
-                  string alerta = "ALERTA: Ticket " + ev.ticket + " no encontrado";
+                  // Capturar worker_exec_time después de OrderClose (aunque haya fallado)
+                  datetime execTime = TimeCurrent();
+                  long workerExecTimeMs = (long)(execTime * 1000) + (GetTickCount() % 1000);
+                  
+                  string err = "Ticket: " + ev.ticket + " - " + FormatLastError("CLOSE FALLO");
+                  if(!TicketInArray(ev.ticket, g_notifCloseTickets, g_notifCloseCount))
+                  {
+                     Notify(err);
+                     AddTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                  }
+                  AppendHistory(err, ev, 0, 0, closePrice, closeTime, profitBefore, workerReadTimeMs, workerExecTimeMs);
+                  // mantener para reintento
+                  ArrayResize(remaining, remainingCount+1);
+                  remaining[remainingCount]=ev.originalLine;
+                  remainingCount++;
+               }
+            }
+            else
+            {
+               // Paso 4: No encontrada en abiertas, buscar en historial (MODE_HISTORY)
+               int historyTicket = FindOrderInHistory(ev.ticket);
+               if(historyTicket >= 0)
+               {
+                  // Encontrada en historial: ya está cerrada
+                  AppendHistory("Operacion ya esta cerrada", ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
+                  RemoveTicket(ev.ticket, g_notifCloseTickets, g_notifCloseCount);
+                  // Eliminar información de OPEN de memoria y archivo
+                  RemoveOpenLog(ev.ticket);
+                  RemoveOpenLogFromFile(ev.ticket);
+               }
+               else
+               {
+                  // Paso 5: No encontrado en ningún lugar, alerta final
+                  string alerta = "ALERTA: Ticket " + ev.ticket + " no encontrado para cerrar";
                   Notify(alerta);
-                  AppendHistory(alerta, ev, 0, 0, 0, 0, 0);
+                  AppendHistory(alerta, ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
                   
                   // Escribir error detallado en archivo
                   WriteCloseErrorToFile(ev);
                   
-                  // Eliminar información de OPEN de memoria
-                  RemoveOpenLog(ev.ticket);
+                  // Limpiar archivo por si acaso
+                  RemoveOpenLogFromFile(ev.ticket);
                }
             }
          }
@@ -1298,13 +1657,13 @@ void OnTimer()
          int orderTicket = FindOpenOrder(ev.ticket);
          if(orderTicket<0)
          {
-            AppendHistory("No existe operacion abierta", ev, 0, 0, 0, 0, 0);
+            AppendHistory("No existe operacion abierta", ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             RemoveTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
             continue;
          }
          if(!OrderSelect(orderTicket, SELECT_BY_TICKET))
          {
-            AppendHistory(FormatLastError("ERROR: MODIFY select"), ev, 0, 0, 0, 0, 0);
+            AppendHistory(FormatLastError("ERROR: MODIFY select"), ev, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             // mantener
             ArrayResize(remaining, remainingCount+1);
             remaining[remainingCount]=ev.originalLine;
@@ -1315,14 +1674,22 @@ void OnTimer()
          double newTP = (ev.tp>0 ? ev.tp : 0.0);
          if(OrderModify(orderTicket, OrderOpenPrice(), newSL, newTP, OrderExpiration(), clrNONE))
          {
+            // Capturar worker_exec_time después de OrderModify
+            datetime execTime = TimeCurrent();
+            long workerExecTimeMs = (long)(execTime * 1000) + (GetTickCount() % 1000);
+            
             string ok = "Ticket: " + ev.ticket + " - MODIFY EXITOSO: SL=" + DoubleToString(newSL,2) + " TP=" + DoubleToString(newTP,2);
             Notify(ok);
             string resHist = "MODIFY OK SL=" + DoubleToString(newSL,2) + " TP=" + DoubleToString(newTP,2);
-            AppendHistory(resHist, ev, 0, 0, 0, 0, 0);
+            AppendHistory(resHist, ev, 0, 0, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
             RemoveTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
          }
          else
          {
+            // Capturar worker_exec_time después de OrderModify (aunque haya fallado)
+            datetime execTime = TimeCurrent();
+            long workerExecTimeMs = (long)(execTime * 1000) + (GetTickCount() % 1000);
+            
             // Capturar error antes de otras llamadas para no perder el código
             int errCode = GetLastError();
             string errDesc = ErrorText(errCode);
@@ -1334,7 +1701,7 @@ void OnTimer()
                AddTicket(ev.ticket, g_notifModifyTickets, g_notifModifyCount);
             }
             // mantener para reintento
-            AppendHistory(err, ev, 0, 0, 0, 0, 0);
+            AppendHistory(err, ev, 0, 0, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
             ArrayResize(remaining, remainingCount+1);
             remaining[remainingCount]=ev.originalLine;
             remainingCount++;

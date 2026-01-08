@@ -2,13 +2,14 @@
 # Líneas vacías o que empiezan por # se ignoran
 # Formato: clave=valor
 
-# Ruta a Common\Files (usar subcarpeta V2\Phoenix)
-common_files_dir=C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\V2\Phoenix
+# Ruta a Common\Files (usar subcarpeta V3\Phoenix)
+common_files_dir=C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files
 
-# Nombre del fichero maestro
-master_filename=Master.txt
+# Carpeta del spool (relativa a common_files_dir)
+spool_folder=V3\Phoenix\Spool
 
 # Lista de workers (una línea por worker)
+# Formato: worker_id=<numero_cuenta>|<symbol_origen>=<symbol_destino>|...
 worker_id=3037589|xauusd-std=GOLD
 worker_id=511029358|xauusd-std=xauusd
 
@@ -18,4 +19,7 @@ poll_seconds=0.5
 
 # Intervalo de recarga de config en minutos
 reload_minutes=15
+
+
+
 
