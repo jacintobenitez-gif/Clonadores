@@ -15,7 +15,7 @@
 input bool   InpUseCommonFiles   = true;                 // escribir en Common\Files (recomendado)
 input string InpSpoolRelFolder   = "V3\\Phoenix\\Spool\\"; // carpeta relativa dentro de Common\Files
 input int    InpThrottleMs       = 150;                  // mínimo ms entre evaluaciones
-input bool   InpEmitOpenOnInit   = true;                 // al iniciar, emite OPEN de lo ya abierto
+input bool   InpValidate30Sec    = true;                 // validar 30 segundos desde apertura (si false, emite todo sin validar)
 
 // -------------------- Globals --------------------
 int     g_prevTickets[];
@@ -232,6 +232,16 @@ string BuildCloseLine(int ticket, long eventTimeMs)
    return StringFormat("EVT|EVENT=CLOSE|TICKET=%d|EVENT_TIME=%lld", ticket, eventTimeMs);
 }
 
+string BuildOpenInvalidateByTime30SegLine(int ticket, string symbol, string typeStr, double lots, double sl, double tp, long eventTimeMs, int secondsElapsed)
+{
+   // Si SL/TP son 0.0, usar string vacío (igual que LectorOrdenes)
+   string sSL = (sl > 0.0 ? DoubleToString(sl, Digits) : "");
+   string sTP = (tp > 0.0 ? DoubleToString(tp, Digits) : "");
+   
+   return StringFormat("EVT|EVENT=OPEN_INVALIDATE_BYTIME30SEG|TICKET=%d|SYMBOL=%s|TYPE=%s|LOTS=%.2f|SL=%s|TP=%s|EVENT_TIME=%lld|INVALIDATION_REASON=Tiempo excedido|SECONDS_ELAPSED=%d",
+                       ticket, symbol, typeStr, lots, sSL, sTP, eventTimeMs, secondsElapsed);
+}
+
 // -------------------- Core --------------------
 void ProcessOnce(bool forceEmitAllOpen)
 {
@@ -280,14 +290,51 @@ void ProcessOnce(bool forceEmitAllOpen)
             datetime openTime = OrderOpenTime();
             long eventTimeMs = (long)(openTime * 1000);
             
-            string lineO = BuildOpenLine(ticket,
-                                         OrderSymbol(),
-                                         TypeToStr(OrderType()),
-                                         OrderLots(),
-                                         OrderStopLoss(),
-                                         OrderTakeProfit(),
-                                         eventTimeMs);
-            WriteSpoolEvent(lineO, ticket, "OPEN");
+            // Validar tiempo solo si InpValidate30Sec está activado
+            if(InpValidate30Sec)
+            {
+               datetime currentTime = TimeCurrent();
+               int secondsElapsed = (int)(currentTime - openTime);
+               
+               // Validar tiempo: solo clonar si han pasado 30 segundos o menos
+               if(secondsElapsed > 30)
+               {
+                  // Orden invalidada por tiempo: generar evento OPEN_INVALIDATE_BYTIME30SEG
+                  string lineInvalidated = BuildOpenInvalidateByTime30SegLine(ticket,
+                                                                              OrderSymbol(),
+                                                                              TypeToStr(OrderType()),
+                                                                              OrderLots(),
+                                                                              OrderStopLoss(),
+                                                                              OrderTakeProfit(),
+                                                                              eventTimeMs,
+                                                                              secondsElapsed);
+                  WriteSpoolEvent(lineInvalidated, ticket, "OPEN_INVALIDATE_BYTIME30SEG");
+               }
+               else
+               {
+                  // Orden válida: generar evento OPEN normal
+                  string lineO = BuildOpenLine(ticket,
+                                               OrderSymbol(),
+                                               TypeToStr(OrderType()),
+                                               OrderLots(),
+                                               OrderStopLoss(),
+                                               OrderTakeProfit(),
+                                               eventTimeMs);
+                  WriteSpoolEvent(lineO, ticket, "OPEN");
+               }
+            }
+            else
+            {
+               // Sin validación: siempre generar evento OPEN normal
+               string lineO = BuildOpenLine(ticket,
+                                            OrderSymbol(),
+                                            TypeToStr(OrderType()),
+                                            OrderLots(),
+                                            OrderStopLoss(),
+                                            OrderTakeProfit(),
+                                            eventTimeMs);
+               WriteSpoolEvent(lineO, ticket, "OPEN");
+            }
          }
       }
       else
@@ -355,11 +402,12 @@ int OnInit()
    g_lastRunMs = 0;
    g_seq       = 0;
 
-   if(InpEmitOpenOnInit)
-      ProcessOnce(true); // emite OPEN de todas las abiertas actuales
+   // Siempre sincronizar al iniciar (aplicará validación si InpValidate30Sec está activado)
+   ProcessOnce(true);
 
    Print("Extractor v1.02 (BUY/SELL) listo. FolderRel=", SpoolBaseRel(),
          " common=", (InpUseCommonFiles ? "true":"false"));
+   Print("Validación 30 segundos: ", (InpValidate30Sec ? "ACTIVADA" : "DESACTIVADA"));
    Print("Codificación UTF-8 igual que LectorOrdenes.mq4");
    Print("Asegúrate de que existe la carpeta: Common\\Files\\", SpoolBaseRel());
 

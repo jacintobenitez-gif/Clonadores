@@ -302,6 +302,26 @@ def convert_pipe_to_csv(event_dict: Dict[str, str]) -> Optional[str]:
         
         return f"{event_type};{ticket};{order_type};{lots};{symbol};{sl};{tp}"
     
+    elif event_type == "OPEN_INVALIDATE_BYTIME30SEG":
+        # OPEN_INVALIDATE_BYTIME30SEG: mismo formato que OPEN pero con campos adicionales
+        symbol = event_dict.get("SYMBOL", "")
+        order_type = event_dict.get("TYPE", "")
+        lots = event_dict.get("LOTS", "0")
+        sl_raw = event_dict.get("SL", "")
+        tp_raw = event_dict.get("TP", "")
+        invalidation_reason = event_dict.get("INVALIDATION_REASON", "")
+        seconds_elapsed = event_dict.get("SECONDS_ELAPSED", "")
+        
+        # Convertir "0.00" o "0" a vacío (igual que LectorOrdenes)
+        sl = "" if (sl_raw == "0.00" or sl_raw == "0" or not sl_raw) else sl_raw
+        tp = "" if (tp_raw == "0.00" or tp_raw == "0" or not tp_raw) else tp_raw
+        
+        if not symbol or not order_type:
+            return None
+        
+        # Formato: event_type;ticket;order_type;lots;symbol;sl;tp;invalidation_reason;seconds_elapsed
+        return f"{event_type};{ticket};{order_type};{lots};{symbol};{sl};{tp};{invalidation_reason};{seconds_elapsed}"
+    
     elif event_type == "MODIFY":
         # MODIFY: solo ticket + SL_NEW + TP_NEW (campos vacíos para el resto)
         sl_new = event_dict.get("SL_NEW", "")
@@ -449,28 +469,36 @@ def process_spool_event(event_path: Path, config: Config) -> bool:
         event_type = event_dict.get("EVENT", "").upper()
         ticket = event_dict.get("TICKET", "")
         
-        # 4. Distribuir a workers (en V3/Phoenix)
         # Convertir csv_line a lista para mantener compatibilidad con V2
         valid_lines = [csv_line + "\n"] if not csv_line.endswith("\n") else [csv_line]
-        queues_dir = config.common_dir / "V3" / "Phoenix"
         
-        # Capturar distribute_time justo antes de distribuir
-        distribute_time_ms = str(int(time.time() * 1000))
-        
-        status = append_to_queues(valid_lines, queues_dir, config.worker_ids, config.symbol_mappings)
-        
-        # 5. Verificar que la distribución fue exitosa ANTES de escribir históricos
-        all_ok = all(status.values())
-        if not all_ok:
-            print(f"[WARN] No se procesó {event_path.name} por errores en distribución (EVENT={event_type} TICKET={ticket})")
-            return False
-        
-        # 6. Escribir históricos SOLO si la distribución fue exitosa
-        hist_master_path = config.common_dir / "V3" / "Phoenix" / "Historico_Master.csv"
-        hist_clonacion_path = config.common_dir / "V3" / "Phoenix" / "historico_clonacion.csv"
-        
-        append_hist_master(valid_lines, hist_master_path, event_time_ms, export_time_ms, read_time_ms, distribute_time_ms)
-        append_hist_clonacion(valid_lines, config.worker_ids, status, hist_clonacion_path)
+        # 4. Si es OPEN_INVALIDATE_BYTIME30SEG, escribir directamente al histórico master sin distribuir
+        if event_type == "OPEN_INVALIDATE_BYTIME30SEG":
+            hist_master_path = config.common_dir / "V3" / "Phoenix" / "Historico_Master.csv"
+            distribute_time_ms = str(int(time.time() * 1000))
+            append_hist_master(valid_lines, hist_master_path, event_time_ms, export_time_ms, read_time_ms, distribute_time_ms)
+            print(f"[OK] Orden invalidada por tiempo registrada en histórico: {event_path.name} (EVENT={event_type} TICKET={ticket})")
+        else:
+            # 5. Distribuir a workers (en V3/Phoenix) para eventos normales
+            queues_dir = config.common_dir / "V3" / "Phoenix"
+            
+            # Capturar distribute_time justo antes de distribuir
+            distribute_time_ms = str(int(time.time() * 1000))
+            
+            status = append_to_queues(valid_lines, queues_dir, config.worker_ids, config.symbol_mappings)
+            
+            # 6. Verificar que la distribución fue exitosa ANTES de escribir históricos
+            all_ok = all(status.values())
+            if not all_ok:
+                print(f"[WARN] No se procesó {event_path.name} por errores en distribución (EVENT={event_type} TICKET={ticket})")
+                return False
+            
+            # 7. Escribir históricos SOLO si la distribución fue exitosa
+            hist_master_path = config.common_dir / "V3" / "Phoenix" / "Historico_Master.csv"
+            hist_clonacion_path = config.common_dir / "V3" / "Phoenix" / "historico_clonacion.csv"
+            
+            append_hist_master(valid_lines, hist_master_path, event_time_ms, export_time_ms, read_time_ms, distribute_time_ms)
+            append_hist_clonacion(valid_lines, config.worker_ids, status, hist_clonacion_path)
         
         # 7. Borrar archivo de evento (solo si todo fue exitoso)
         try:
