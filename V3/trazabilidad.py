@@ -234,7 +234,29 @@ def calculate_diff_ms(event_time_ms: Optional[int], timestamp_str: str) -> Optio
     return timestamp_ms - event_time_ms
 
 
-def generate_traceability(common_dir: Path, output_path: Path):
+def filter_today_events(master_data: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    """
+    Filtra eventos para mostrar solo los de hoy.
+    Usa export_time como referencia (momento en que se exportó el evento).
+    """
+    from datetime import datetime, timezone
+    
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start_ms = int(today_start.timestamp() * 1000)
+    
+    filtered = {}
+    for key, event_info in master_data.items():
+        export_time = event_info.get("export_time", "")
+        export_time_ms = timestamp_to_ms(export_time)
+        
+        # Si export_time es de hoy o posterior, incluir el evento
+        if export_time_ms is not None and export_time_ms >= today_start_ms:
+            filtered[key] = event_info
+    
+    return filtered
+
+
+def generate_traceability(common_dir: Path, output_path: Path, filter_today: bool = False):
     """Genera archivo de trazabilidad."""
     v3_phoenix = common_dir / V3_PHOENIX_DIR
     hist_master_path = v3_phoenix / HIST_MASTER_FILE
@@ -243,6 +265,11 @@ def generate_traceability(common_dir: Path, output_path: Path):
     print(f"[INFO] Leyendo {hist_master_path}")
     master_data = read_master_hist(hist_master_path)
     print(f"[INFO] Encontrados {len(master_data)} eventos en Master")
+    
+    # Filtrar eventos de hoy si se solicita
+    if filter_today:
+        master_data = filter_today_events(master_data)
+        print(f"[INFO] Filtrados eventos de hoy: {len(master_data)} eventos")
     
     # Obtener worker IDs
     worker_ids = get_worker_ids_from_config(config_path)
@@ -362,8 +389,29 @@ def main():
     print(f"[INIT] Generando trazabilidad...")
     print(f"[INIT] Common dir: {common_dir}")
     print(f"[INIT] Output: {output_path}")
+    print("\nOpciones:")
+    print("1. Calcular diferencia hoy (solo operaciones de hoy)")
+    print("2. Calcular diferencias histórico (todas las operaciones)")
     
-    generate_traceability(common_dir, output_path)
+    while True:
+        try:
+            opcion = input("\nSeleccione opción (1 o 2): ").strip()
+            if opcion == "1":
+                filter_today = True
+                print("[INFO] Modo: Solo eventos de hoy")
+                break
+            elif opcion == "2":
+                filter_today = False
+                print("[INFO] Modo: Histórico completo")
+                break
+            else:
+                print("[ERROR] Por favor seleccione 1 o 2")
+        except (EOFError, KeyboardInterrupt):
+            print("\n[INFO] Usando opción por defecto: Histórico completo")
+            filter_today = False
+            break
+    
+    generate_traceability(common_dir, output_path, filter_today)
 
 
 if __name__ == "__main__":
