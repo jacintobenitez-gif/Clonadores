@@ -152,25 +152,25 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
 {
    string relFolder = SpoolBaseRel();
 
-   datetime nowGmt = TimeGMT();
+   datetime nowLocal = TimeLocal();
    int ms = (int)(GetTickCount() % 1000);
    
    // Calcular export_time en milisegundos desde epoch (1970.01.01 00:00:00)
    // datetime es segundos desde epoch, multiplicar por 1000 y añadir milisegundos
-   long exportTimeMs = (long)(nowGmt * 1000) + ms;
+   long exportTimeMs = (long)(nowLocal * 1000) + ms;
 
    g_seq++;
 
    // Nombre único y ordenable:
    // YYYYMMDD_HHMMSS_mmm__SEQ__TICKET__EVENT
    // En MQL4, extraer segundos manualmente desde datetime
-   datetime dayStart = nowGmt - (nowGmt % 86400);  // Inicio del día
-   int secondsFromMidnight = (int)(nowGmt - dayStart);
+   datetime dayStart = nowLocal - (nowLocal % 86400);  // Inicio del día
+   int secondsFromMidnight = (int)(nowLocal - dayStart);
    int sec = secondsFromMidnight % 60;
    
    string fnameBase = StringFormat("%04d%02d%02d_%02d%02d%02d_%03d__%06d__%d__%s",
-                                   TimeYear(nowGmt), TimeMonth(nowGmt), TimeDay(nowGmt),
-                                   TimeHour(nowGmt), TimeMinute(nowGmt), sec,
+                                   TimeYear(nowLocal), TimeMonth(nowLocal), TimeDay(nowLocal),
+                                   TimeHour(nowLocal), TimeMinute(nowLocal), sec,
                                    ms, g_seq, ticket, evtType);
 
    string tmpRel   = relFolder + fnameBase + ".tmp";

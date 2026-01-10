@@ -15,10 +15,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import csv
 import os
+from datetime import datetime
 
 # Configuración por defecto
 DEFAULT_COMMON_FILES_DIR = Path.home() / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files"
-V3_PHOENIX_DIR = "V3" / "Phoenix"
+V3_PHOENIX_DIR = Path("V3") / "Phoenix"
 HIST_MASTER_FILE = "Historico_Master.csv"
 TRACEABILITY_FILE = "trazabilidad.txt"
 
@@ -34,14 +35,23 @@ def get_common_files_dir() -> Path:
 def parse_hist_master_line(line: str) -> Optional[Dict[str, str]]:
     """
     Parsea una línea de Historico_Master.csv.
-    Formato esperado: event_type;ticket;order_type;lots;symbol;sl;tp;event_time;export_time;read_time;distribute_time
+    Formato normal: event_type;ticket;order_type;lots;symbol;sl;tp;event_time;export_time;read_time;distribute_time
+    Formato OPEN_INVALIDATE_BYTIME30SEG: event_type;ticket;order_type;lots;symbol;sl;tp;invalidation_reason;seconds_elapsed;event_time;export_time;read_time;distribute_time
     """
     parts = line.strip().split(";")
     if len(parts) < 8:  # Mínimo event_type;ticket;...;event_time
         return None
     
+    event_type = parts[0]
+    
+    # Excluir eventos OPEN_INVALIDATE_BYTIME30SEG
+    if event_type == "OPEN_INVALIDATE_BYTIME30SEG":
+        return None
+    
+    # Para eventos normales, los timestamps están en índices 7-10
+    # Para OPEN_INVALIDATE_BYTIME30SEG estarían en 9-12, pero los excluimos
     return {
-        "event_type": parts[0],
+        "event_type": event_type,
         "ticket": parts[1],
         "event_time": parts[7] if len(parts) > 7 else "",
         "export_time": parts[8] if len(parts) > 8 else "",
@@ -173,6 +183,57 @@ def aggregate_worker_data(all_worker_data: List[Dict[str, Dict[str, str]]]) -> D
     return aggregated
 
 
+def timestamp_to_ms(timestamp_str: str) -> Optional[int]:
+    """
+    Convierte timestamp a milisegundos.
+    Acepta formato: milisegundos (string numérico) o fecha (YYYY.MM.DD HH:MM:SS.mmm)
+    """
+    if not timestamp_str or timestamp_str.strip() == "":
+        return None
+    
+    timestamp_str = timestamp_str.strip()
+    
+    # Si es numérico, asumir que ya está en milisegundos
+    try:
+        ms = int(float(timestamp_str))
+        # Si el número es muy pequeño (< 1000000000), asumir que está en segundos
+        if ms < 1000000000:
+            ms = ms * 1000
+        return ms
+    except ValueError:
+        pass
+    
+    # Intentar parsear como fecha: YYYY.MM.DD HH:MM:SS.mmm
+    try:
+        # Formato: 2026.01.05 20:04:09.433
+        dt = datetime.strptime(timestamp_str, "%Y.%m.%d %H:%M:%S.%f")
+        return int(dt.timestamp() * 1000)
+    except ValueError:
+        try:
+            # Formato sin milisegundos: 2026.01.05 20:04:09
+            dt = datetime.strptime(timestamp_str, "%Y.%m.%d %H:%M:%S")
+            return int(dt.timestamp() * 1000)
+        except ValueError:
+            pass
+    
+    return None
+
+
+def calculate_diff_ms(event_time_ms: Optional[int], timestamp_str: str) -> Optional[int]:
+    """
+    Calcula la diferencia en milisegundos entre event_time y otro timestamp.
+    Retorna None si alguno de los valores es inválido.
+    """
+    if event_time_ms is None:
+        return None
+    
+    timestamp_ms = timestamp_to_ms(timestamp_str)
+    if timestamp_ms is None:
+        return None
+    
+    return timestamp_ms - event_time_ms
+
+
 def generate_traceability(common_dir: Path, output_path: Path):
     """Genera archivo de trazabilidad."""
     v3_phoenix = common_dir / V3_PHOENIX_DIR
@@ -206,8 +267,8 @@ def generate_traceability(common_dir: Path, output_path: Path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     with open(output_path, "w", encoding="utf-8") as f:
-        # Header
-        f.write("ticket_event|event_time|export_time|read_time|distribute_time|worker_read_time|worker_exec_time\n")
+        # Header con diferencias y total
+        f.write("ticket_event|event_time|export_time|read_time|distribute_time|worker_read_time|worker_exec_time|diff_export_ms|diff_read_ms|diff_distribute_ms|diff_worker_read_ms|diff_worker_exec_ms|total_ms\n")
         
         # Escribir todos los eventos del master
         for key, master_info in sorted(master_data.items()):
@@ -220,7 +281,73 @@ def generate_traceability(common_dir: Path, output_path: Path):
             worker_read_time = worker_info.get("worker_read_time", "")
             worker_exec_time = worker_info.get("worker_exec_time", "")
             
-            f.write(f"{key}|{event_time}|{export_time}|{read_time}|{distribute_time}|{worker_read_time}|{worker_exec_time}\n")
+            # Convertir todos los timestamps a milisegundos
+            event_time_ms = timestamp_to_ms(event_time)
+            export_time_ms = timestamp_to_ms(export_time)
+            read_time_ms = timestamp_to_ms(read_time)
+            distribute_time_ms = timestamp_to_ms(distribute_time)
+            worker_read_time_ms = timestamp_to_ms(worker_read_time)
+            worker_exec_time_ms = timestamp_to_ms(worker_exec_time)
+            
+            # Encontrar el timestamp más antiguo (el que representa el evento original)
+            # Si event_time es mayor que los demás, usar el más antiguo disponible como referencia
+            timestamps = [t for t in [export_time_ms, read_time_ms, distribute_time_ms, worker_read_time_ms, worker_exec_time_ms] if t is not None]
+            
+            if timestamps and event_time_ms:
+                # Si event_time es mayor que todos los demás, usar el más antiguo como referencia
+                oldest_timestamp = min(timestamps)
+                if event_time_ms > oldest_timestamp:
+                    # event_time parece ser incorrecto, usar el más antiguo como referencia
+                    base_time_ms = oldest_timestamp
+                else:
+                    # event_time es el más antiguo, usarlo como referencia
+                    base_time_ms = event_time_ms
+            elif event_time_ms:
+                base_time_ms = event_time_ms
+            elif timestamps:
+                base_time_ms = min(timestamps)
+            else:
+                base_time_ms = None
+            
+            # Calcular diferencias en milisegundos desde el timestamp base
+            diff_export_ms = calculate_diff_ms(base_time_ms, export_time) if base_time_ms else None
+            diff_read_ms = calculate_diff_ms(base_time_ms, read_time) if base_time_ms else None
+            diff_distribute_ms = calculate_diff_ms(base_time_ms, distribute_time) if base_time_ms else None
+            diff_worker_read_ms = calculate_diff_ms(base_time_ms, worker_read_time) if base_time_ms else None
+            diff_worker_exec_ms = calculate_diff_ms(base_time_ms, worker_exec_time) if base_time_ms else None
+            
+            # Calcular total_ms (tiempo desde export_time hasta worker_exec_time)
+            # Es la diferencia entre el último timestamp y export_time
+            total_ms = None
+            if export_time_ms is not None:
+                # Buscar el último timestamp disponible (prioridad: worker_exec > worker_read > distribute > read > export)
+                if worker_exec_time_ms is not None:
+                    total_ms = worker_exec_time_ms - export_time_ms
+                elif worker_read_time_ms is not None:
+                    total_ms = worker_read_time_ms - export_time_ms
+                elif distribute_time_ms is not None:
+                    total_ms = distribute_time_ms - export_time_ms
+                elif read_time_ms is not None:
+                    total_ms = read_time_ms - export_time_ms
+            
+            # Formatear diferencias (mostrar "N/A" si es None, o valor con unidad ms/s)
+            def format_diff(diff):
+                if diff is None:
+                    return "N/A"
+                # Si es menor a 1000, mostrar en milisegundos
+                if abs(diff) < 1000:
+                    return f"{diff}ms"
+                # Si es mayor o igual a 1000, convertir a segundos y mostrar
+                else:
+                    seconds = diff / 1000.0
+                    # Si es un número entero, mostrar sin decimales
+                    if seconds == int(seconds):
+                        return f"{int(seconds)}s"
+                    else:
+                        # Mostrar con 2 decimales máximo
+                        return f"{seconds:.2f}s"
+            
+            f.write(f"{key}|{event_time}|{export_time}|{read_time}|{distribute_time}|{worker_read_time}|{worker_exec_time}|{format_diff(diff_export_ms)}|{format_diff(diff_read_ms)}|{format_diff(diff_distribute_ms)}|{format_diff(diff_worker_read_ms)}|{format_diff(diff_worker_exec_ms)}|{format_diff(total_ms)}\n")
     
     print(f"[OK] Trazabilidad generada: {output_path}")
     print(f"[INFO] Total eventos procesados: {len(master_data)}")
