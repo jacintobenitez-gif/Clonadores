@@ -41,6 +41,7 @@ struct EventRec
    string symbol;
    double sl;
    double tp;
+   ulong ticketWorker;  // Ticket del worker (solo se usa para OPEN exitoso)
    string originalLine;
 };
 
@@ -1246,6 +1247,7 @@ bool ParseLine(const string line, EventRec &ev)
    ev.symbol = "";
    ev.sl = 0.0;
    ev.tp = 0.0;
+   ev.ticketWorker = 0;  // Inicializar ticketWorker a 0
    
    // Parsear según el tipo de evento
    if(ev.eventType == "OPEN")
@@ -1485,6 +1487,9 @@ void OnTimer()
                   }
                }
             }
+            
+            // Actualizar ticketWorker en EventRec cuando hay OPEN exitoso
+            ev.ticketWorker = ticketWorker;
             
             // Verificación inmediata antes de enviar notificación
             string tsVerify = GetTimestampWithMillis();
