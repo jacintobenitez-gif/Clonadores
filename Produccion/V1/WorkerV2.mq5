@@ -8,8 +8,8 @@
 #property version   "2.00"
 
 // -------------------- Inputs --------------------
-input bool   InpFondeo        = false;
-input double InpLotMultiplier = 1.0;
+input bool   InpFondeo        = true;
+input double InpLotMultiplier = 3.0;
 input double InpFixedLots     = 0.10;  // (no se usa si InpFondeo=false, se mantiene por compatibilidad)
 input int    InpSlippage      = 30;    // puntos (compatibilidad con MT4)
 input int    InpMagicNumber   = 0;     // (compatibilidad; en V2 el magic es ticketMaster)
