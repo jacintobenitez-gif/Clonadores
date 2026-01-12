@@ -39,7 +39,8 @@ def parse_hist_master_line(line: str) -> Optional[Dict[str, str]]:
     Formato OPEN_INVALIDATE_BYTIME30SEG: event_type;ticket;order_type;lots;symbol;sl;tp;invalidation_reason;seconds_elapsed;event_time;export_time;read_time;distribute_time
     """
     parts = line.strip().split(";")
-    if len(parts) < 8:  # Mínimo event_type;ticket;...;event_time
+    # Mínimo: event_type;ticket;... (el resto puede variar en número de campos vacíos)
+    if len(parts) < 2:
         return None
     
     event_type = parts[0]
@@ -48,15 +49,23 @@ def parse_hist_master_line(line: str) -> Optional[Dict[str, str]]:
     if event_type == "OPEN_INVALIDATE_BYTIME30SEG":
         return None
     
-    # Para eventos normales, los timestamps están en índices 7-10
-    # Para OPEN_INVALIDATE_BYTIME30SEG estarían en 9-12, pero los excluimos
+    # IMPORTANTE:
+    # En Historico_Master.csv los eventos (OPEN/MODIFY/CLOSE) pueden tener distinto número de
+    # columnas vacías antes de los timestamps (p.ej. CLOSE suele venir con ";;;;;;;").
+    # Por eso NO podemos confiar en índices fijos (7-10). Tomamos SIEMPRE los 4 últimos campos:
+    # event_time;export_time;read_time;distribute_time
+    if len(parts) >= 4:
+        event_time, export_time, read_time, distribute_time = parts[-4:]
+    else:
+        event_time = export_time = read_time = distribute_time = ""
+
     return {
         "event_type": event_type,
         "ticket": parts[1],
-        "event_time": parts[7] if len(parts) > 7 else "",
-        "export_time": parts[8] if len(parts) > 8 else "",
-        "read_time": parts[9] if len(parts) > 9 else "",
-        "distribute_time": parts[10] if len(parts) > 10 else "",
+        "event_time": event_time,
+        "export_time": export_time,
+        "read_time": read_time,
+        "distribute_time": distribute_time,
     }
 
 
