@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 import csv
 import os
 from datetime import datetime
+import math
 
 # Configuración por defecto
 DEFAULT_COMMON_FILES_DIR = Path.home() / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files"
@@ -153,8 +154,24 @@ def read_worker_hist(hist_path: Path) -> Dict[str, Dict[str, str]]:
     if not hist_path.exists():
         return worker_data
     
+    def _open_text_auto(p: Path):
+        """
+        Algunos históricos pueden estar en UTF-16 (BOM 0xFF 0xFE / 0xFE 0xFF).
+        Detectar BOM en binario y abrir con la codificación correcta.
+        """
+        try:
+            with open(p, "rb") as bf:
+                head = bf.read(4)
+            if head.startswith(b"\xff\xfe") or head.startswith(b"\xfe\xff"):
+                return open(p, "r", encoding="utf-16")
+            # utf-8-sig cubre BOM UTF-8 si existiera
+            return open(p, "r", encoding="utf-8-sig")
+        except Exception:
+            # fallback ultra-permisivo
+            return open(p, "r", encoding="latin-1", errors="replace")
+
     try:
-        with open(hist_path, "r", encoding="utf-8") as f:
+        with _open_text_auto(hist_path) as f:
             for line_num, line in enumerate(f, 1):
                 if line_num == 1:  # Saltar header si existe
                     if "worker_exec_time" in line.lower() or "timestamp_ejecucion" in line.lower():
@@ -175,6 +192,23 @@ def read_worker_hist(hist_path: Path) -> Dict[str, Dict[str, str]]:
         print(f"[ERROR] Error leyendo {hist_path}: {exc}")
     
     return worker_data
+
+
+def _nearest_hour_offset_ms(delta_ms: int, max_jitter_ms: int = 120_000) -> Optional[int]:
+    """
+    Si delta_ms está cerca de un múltiplo de 1 hora (3600s), devuelve ese offset en ms.
+    Sirve para corregir desfaces UTC vs hora servidor MT4 cuando se comparan timestamps de distintos sistemas.
+    """
+    hour_ms = 3_600_000
+    if delta_ms == 0:
+        return 0
+    k = int(round(delta_ms / hour_ms))
+    if k == 0:
+        return 0
+    candidate = k * hour_ms
+    if abs(delta_ms - candidate) <= max_jitter_ms:
+        return candidate
+    return None
 
 
 def aggregate_worker_data(all_worker_data: List[Dict[str, Dict[str, str]]]) -> Dict[str, Dict[str, str]]:
@@ -331,6 +365,22 @@ def generate_traceability(common_dir: Path, output_path: Path, filter_today: boo
             distribute_time_ms = timestamp_to_ms(distribute_time)
             worker_read_time_ms = timestamp_to_ms(worker_read_time)
             worker_exec_time_ms = timestamp_to_ms(worker_exec_time)
+
+            # Normalización:
+            # - export/read/distribute vienen de Python/Extractor en UTC ms.
+            # - worker_* vienen de MT4 (TimeCurrent) => epoch ms pero en "hora servidor",
+            #   típicamente UTC+3600, por eso parecen tardar ~3600s.
+            # Detectar y corregir offsets de horas enteras usando distribute_time como ancla (mejor referencia).
+            worker_offset_ms = 0
+            anchor_ms = distribute_time_ms or read_time_ms or export_time_ms
+            if anchor_ms is not None and worker_exec_time_ms is not None:
+                raw_delta = worker_exec_time_ms - anchor_ms
+                hour_off = _nearest_hour_offset_ms(raw_delta)
+                if hour_off is not None and hour_off != 0:
+                    worker_offset_ms = hour_off
+                    worker_exec_time_ms = worker_exec_time_ms - worker_offset_ms
+                    if worker_read_time_ms is not None:
+                        worker_read_time_ms = worker_read_time_ms - worker_offset_ms
             
             # Encontrar el timestamp más antiguo (el que representa el evento original)
             # Si event_time es mayor que los demás, usar el más antiguo disponible como referencia
@@ -358,6 +408,13 @@ def generate_traceability(common_dir: Path, output_path: Path, filter_today: boo
             diff_distribute_ms = calculate_diff_ms(base_time_ms, distribute_time) if base_time_ms else None
             diff_worker_read_ms = calculate_diff_ms(base_time_ms, worker_read_time) if base_time_ms else None
             diff_worker_exec_ms = calculate_diff_ms(base_time_ms, worker_exec_time) if base_time_ms else None
+
+            # Si normalizamos, usar los ms corregidos para los diffs (sin tocar las columnas originales).
+            if base_time_ms is not None:
+                if worker_read_time_ms is not None:
+                    diff_worker_read_ms = worker_read_time_ms - base_time_ms
+                if worker_exec_time_ms is not None:
+                    diff_worker_exec_ms = worker_exec_time_ms - base_time_ms
             
             # Calcular total_ms (tiempo desde export_time hasta worker_exec_time)
             # Es la diferencia entre el último timestamp y export_time
