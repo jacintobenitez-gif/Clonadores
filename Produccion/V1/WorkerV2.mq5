@@ -328,9 +328,9 @@ void UpdateOpenLogSLTP(const int ticketMaster, double slVal, double tpVal)
 // -------------------- Trade helpers (declaradas antes de usarse) --------------------
 bool SelectPositionByIndex(const int index)
 {
+   // PositionGetTicket() ya selecciona automáticamente la posición del índice
    ulong ticket = PositionGetTicket(index);
-   if(ticket == 0) return false;
-   return PositionSelectByTicket(ticket);
+   return (ticket != 0);
 }
 
 bool SendDeal(const string sym, const ENUM_ORDER_TYPE type, const double volume, const double price, const double slVal, const double tpVal, const int magic, const string comment, const ulong positionTicket, MqlTradeResult &res)
