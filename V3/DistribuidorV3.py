@@ -323,11 +323,19 @@ def convert_pipe_to_csv(event_dict: Dict[str, str]) -> Optional[str]:
         return f"{event_type};{ticket};{order_type};{lots};{symbol};{sl};{tp};{invalidation_reason};{seconds_elapsed}"
     
     elif event_type == "MODIFY":
-        # MODIFY: solo ticket + SL_NEW + TP_NEW (campos vacíos para el resto)
-        sl_new = event_dict.get("SL_NEW", "")
-        tp_new = event_dict.get("TP_NEW", "")
-        
-        return f"{event_type};{ticket};;;;;{sl_new};{tp_new}"
+        # MODIFY: escribir en formato CORTO para WorkerV2:
+        #   MODIFY;ticket;sl;tp
+        # Importante: si SL_NEW viene vacío pero TP_NEW no, el WorkerV2 preferirá el formato largo
+        # (y ahí es fácil desalinear columnas). Por eso ponemos "0" como placeholder.
+        sl_new = (event_dict.get("SL_NEW", "") or "").strip()
+        tp_new = (event_dict.get("TP_NEW", "") or "").strip()
+
+        if sl_new == "":
+            sl_new = "0"
+        if tp_new == "":
+            tp_new = "0"
+
+        return f"{event_type};{ticket};{sl_new};{tp_new}"
     
     elif event_type == "CLOSE":
         # CLOSE: solo ticket (campos vacíos para el resto)
