@@ -586,21 +586,18 @@ bool ParseLine(const string line,
    }
    if(eventType == "MODIFY")
    {
-      // Preferir formato corto: MODIFY;ticket;sl;tp
-      if(n >= 4 && Trim(parts[2]) != "")
-      {
-         string s = Trim(parts[2]); StringReplace(s, ",", "."); sl = StrToDouble(s);
-         string t = Trim(parts[3]); StringReplace(t, ",", "."); tp = StrToDouble(t);
-         return true;
-      }
-      // Formato largo: MODIFY;ticket;;;;;sl;tp (sl y tp al final)
-      if(n >= 7)
-      {
-         string s = Trim(parts[5]); StringReplace(s, ",", "."); if(s!="") sl = StrToDouble(s);
-         string t = Trim(parts[6]); StringReplace(t, ",", "."); if(t!="") tp = StrToDouble(t);
-         return true;
-      }
-      return true; // allow empty modify
+      // Contrato ÚNICO: MODIFY;ticket;sl;tp
+      if(n < 4) return false;
+
+      string s = Trim(parts[2]); StringReplace(s, ",", ".");
+      string t = Trim(parts[3]); StringReplace(t, ",", ".");
+
+      // No permitir ambos vacíos (evento inválido)
+      if(s == "" && t == "") return false;
+
+      if(s != "") sl = StrToDouble(s);
+      if(t != "") tp = StrToDouble(t);
+      return true;
    }
    if(eventType == "CLOSE")
    {

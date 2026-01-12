@@ -325,11 +325,16 @@ def convert_pipe_to_csv(event_dict: Dict[str, str]) -> Optional[str]:
     elif event_type == "MODIFY":
         # MODIFY: escribir en formato CORTO para WorkerV2:
         #   MODIFY;ticket;sl;tp
-        # Importante: si SL_NEW viene vacío pero TP_NEW no, el WorkerV2 preferirá el formato largo
-        # (y ahí es fácil desalinear columnas). Por eso ponemos "0" como placeholder.
+        # Regla: en un MODIFY debe venir SL_NEW o TP_NEW o ambos. No pueden venir ambos vacíos.
         sl_new = (event_dict.get("SL_NEW", "") or "").strip()
         tp_new = (event_dict.get("TP_NEW", "") or "").strip()
 
+        if sl_new == "" and tp_new == "":
+            # Evento inválido: no tiene nada que modificar
+            print(f"[WARN] MODIFY inválido (SL_NEW y TP_NEW vacíos). ticket={ticket} archivo no se distribuye.")
+            return None
+
+        # Placeholder "0" para el campo que venga vacío (para mantener el contrato corto estable)
         if sl_new == "":
             sl_new = "0"
         if tp_new == "":
