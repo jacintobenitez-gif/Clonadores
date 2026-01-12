@@ -49,6 +49,10 @@ def parse_hist_master_line(line: str) -> Optional[Dict[str, str]]:
     # Excluir eventos OPEN_INVALIDATE_BYTIME30SEG
     if event_type == "OPEN_INVALIDATE_BYTIME30SEG":
         return None
+
+    # Por ahora, ignorar MODIFY: solo interesa la latencia de OPEN/CLOSE
+    if event_type == "MODIFY":
+        return None
     
     # IMPORTANTE:
     # En Historico_Master.csv los eventos (OPEN/MODIFY/CLOSE) pueden tener distinto número de
