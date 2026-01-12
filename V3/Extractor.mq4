@@ -285,6 +285,11 @@ void ProcessOnce(bool forceEmitAllOpen)
             int serverOffsetSec = (int)(TimeCurrent() - TimeGMT());
             long openTimeUtcMs = (long)((openTime - serverOffsetSec) * 1000);
             
+            // Añadir OPEN_TIME_MT_PC_MS (epoch ms ajustado a la hora local del PC donde corre MT4)
+            // Offset PC vs UTC (segundos): TimeLocal() - TimeGMT()
+            int pcOffsetSec = (int)(TimeLocal() - TimeGMT());
+            long openTimeMtPcMs = openTimeUtcMs + (long)pcOffsetSec * 1000;
+            
             string lineO = BuildOpenLine(ticket,
                                          OrderSymbol(),
                                          TypeToStr(OrderType()),
@@ -293,6 +298,7 @@ void ProcessOnce(bool forceEmitAllOpen)
                                          OrderTakeProfit(),
                                          eventTimeMs);
             lineO = lineO + "|OPEN_TIME_UTC_MS=" + StringFormat("%lld", openTimeUtcMs);
+            lineO = lineO + "|OPEN_TIME_MT_PC_MS=" + StringFormat("%lld", openTimeMtPcMs);
             WriteSpoolEvent(lineO, ticket, "OPEN");
          }
       }

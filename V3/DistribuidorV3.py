@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Dict
@@ -477,12 +477,31 @@ def process_spool_event(event_path: Path, config: Config) -> bool:
 
             now_dt_str = datetime.fromtimestamp(now_ms_int / 1000).strftime("%Y.%m.%d %H:%M:%S")
 
+            # Mostrar open_time según el PC de MT4 (si viene informado por Extractor)
+            open_mt_pc_dt_str = ""
+            try:
+                open_mt_pc_ms_int = int(event_dict.get("OPEN_TIME_MT_PC_MS", "") or "")
+                open_mt_pc_dt_str = datetime.fromtimestamp(open_mt_pc_ms_int / 1000).strftime("%Y.%m.%d %H:%M:%S")
+            except Exception:
+                open_mt_pc_dt_str = ""
+            # También mostrar open_time "real" (server time) si EVENT_TIME es parseable
+            open_real_dt_str = ""
+            try:
+                event_ms_int = int(event_time_ms)
+                # EVENT_TIME viene como openTime(server)*1000, OPEN_TIME_UTC_MS es openTime(utc)*1000
+                offset_sec = int(round((event_ms_int - open_ms_int) / 1000))
+                open_real_dt_str = (datetime.fromtimestamp(open_ms_int / 1000) + timedelta(seconds=offset_sec)).strftime(
+                    "%Y.%m.%d %H:%M:%S"
+                )
+            except Exception:
+                open_real_dt_str = ""
+
             if diff_seconds == -1 or diff_seconds > 30:
                 motivo = "OPEN_TIME_UTC_MS inválido" if diff_seconds == -1 else "Tiempo excedido"
                 nota = f"Ticket {ticket} invalido por regla 30 segundos"
 
                 # Construir línea CSV de invalidación con columnas extra:
-                # event_type;ticket;order_type;lots;symbol;sl;tp;invalidation_reason;seconds_elapsed;nota;open_time;hora_actual;diferencia_seg
+                # event_type;ticket;order_type;lots;symbol;sl;tp;invalidation_reason;seconds_elapsed;nota;open_time;open_time_MT_PC;hora_actual;diferencia_seg
                 symbol = event_dict.get("SYMBOL", "")
                 order_type = event_dict.get("TYPE", "")
                 lots = event_dict.get("LOTS", "0")
@@ -494,7 +513,7 @@ def process_spool_event(event_path: Path, config: Config) -> bool:
                 seconds_elapsed_str = "" if diff_seconds == -1 else str(diff_seconds)
                 invalid_csv = (
                     f"OPEN_INVALIDATE_BYTIME30SEG;{ticket};{order_type};{lots};{symbol};{sl};{tp};"
-                    f"{motivo};{seconds_elapsed_str};{nota};{open_dt_str};{now_dt_str};{seconds_elapsed_str}"
+                    f"{motivo};{seconds_elapsed_str};{nota};{open_dt_str};{open_mt_pc_dt_str};{now_dt_str};{seconds_elapsed_str}"
                 )
                 valid_lines = [invalid_csv + "\n"]
 
@@ -506,7 +525,9 @@ def process_spool_event(event_path: Path, config: Config) -> bool:
                 append_hist_master(valid_lines, hist_master_path, hist_event_time_ms, export_time_ms, read_time_ms, distribute_time_ms)
 
                 print(
-                    f"[OPEN][INVALIDADO_30S] ticket={ticket} open_time={open_dt_str} "
+                    f"[OPEN][INVALIDADO_30S] ticket={ticket} open_time (real)={open_real_dt_str} "
+                    f"open_time (convertido)={open_dt_str} "
+                    f"open_time_MT_PC={open_mt_pc_dt_str} "
                     f"hora_actual={now_dt_str} diferencia_seg={seconds_elapsed_str} | {motivo}"
                 )
 
