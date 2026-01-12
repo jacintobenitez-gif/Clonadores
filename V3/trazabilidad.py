@@ -269,7 +269,14 @@ def generate_traceability(common_dir: Path, output_path: Path, filter_today: boo
     """Genera archivo de trazabilidad."""
     v3_phoenix = common_dir / V3_PHOENIX_DIR
     hist_master_path = v3_phoenix / HIST_MASTER_FILE
-    config_path = v3_phoenix.parent / "distribuidor_config.txt"
+    # El config suele vivir en el repo (V3/distribuidor_config.txt), no en Common\Files.
+    # Intentar varias ubicaciones para que siempre encuentre worker_ids.
+    config_candidates = [
+        common_dir / "V3" / "distribuidor_config.txt",
+        common_dir / "V3" / "Phoenix" / "distribuidor_config.txt",
+        Path(__file__).resolve().parent / "distribuidor_config.txt",
+    ]
+    config_path = next((p for p in config_candidates if p.exists()), config_candidates[-1])
     
     print(f"[INFO] Leyendo {hist_master_path}")
     master_data = read_master_hist(hist_master_path)
@@ -365,6 +372,10 @@ def generate_traceability(common_dir: Path, output_path: Path, filter_today: boo
                     total_ms = distribute_time_ms - export_time_ms
                 elif read_time_ms is not None:
                     total_ms = read_time_ms - export_time_ms
+
+                # Si es negativo por poco (desfase reloj servidor/PC), clamp a 0 para no confundir.
+                if total_ms is not None and total_ms < 0 and abs(total_ms) <= 2000:
+                    total_ms = 0
             
             # Formatear diferencias (mostrar "N/A" si es None, o valor con unidad ms/s)
             def format_diff(diff):
