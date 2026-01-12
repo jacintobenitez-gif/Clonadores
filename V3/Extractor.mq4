@@ -1,12 +1,12 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                                      Extractor.mq4 |
 //|  Spool por evento en Common\Files\V3\Phoenix\Spool                  |
 //|  SOLO MARKET: BUY / SELL                                            |
 //|  OPEN:   ticket + symbol + type + lots + SL + TP                    |
 //|  MODIFY: ticket + SL_OLD/SL_NEW + TP_OLD/TP_NEW                     |
 //|  CLOSE:  ticket                                                     |
-//|  Escritura atómica: .tmp -> .txt                                    |
-//|  Codificación UTF-8 igual que LectorOrdenes.mq4                    |
+//|  Escritura atÃ³mica: .tmp -> .txt                                    |
+//|  CodificaciÃ³n UTF-8 igual que LectorOrdenes.mq4                    |
 //+------------------------------------------------------------------+
 #property strict
 #property version   "1.02"
@@ -14,7 +14,7 @@
 // -------------------- Inputs --------------------
 input bool   InpUseCommonFiles   = true;                 // escribir en Common\Files (recomendado)
 input string InpSpoolRelFolder   = "V3\\Phoenix\\Spool\\"; // carpeta relativa dentro de Common\Files
-input int    InpThrottleMs       = 150;                  // mínimo ms entre evaluaciones
+input int    InpThrottleMs       = 150;                  // mÃ­nimo ms entre evaluaciones
 input bool   InpEmitOpenOnInit   = true;                 // al iniciar, emite OPEN de lo ya abierto
 
 // -------------------- Globals --------------------
@@ -147,7 +147,7 @@ bool AtomicPromoteTmpToTxt(string tmpRel, string finalRel)
    return true;
 }
 
-// --- Escribe un fichero por evento (spool) con codificación UTF-8 igual que LectorOrdenes
+// --- Escribe un fichero por evento (spool) con codificaciÃ³n UTF-8 igual que LectorOrdenes
 bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
 {
    string relFolder = SpoolBaseRel();
@@ -156,15 +156,15 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
    int ms = (int)(GetTickCount() % 1000);
    
    // Calcular export_time en milisegundos desde epoch (1970.01.01 00:00:00)
-   // datetime es segundos desde epoch, multiplicar por 1000 y añadir milisegundos
+   // datetime es segundos desde epoch, multiplicar por 1000 y aÃ±adir milisegundos
    long exportTimeMs = (long)(nowGmt * 1000) + ms;
 
    g_seq++;
 
-   // Nombre único y ordenable:
+   // Nombre Ãºnico y ordenable:
    // YYYYMMDD_HHMMSS_mmm__SEQ__TICKET__EVENT
    // En MQL4, extraer segundos manualmente desde datetime
-   datetime dayStart = nowGmt - (nowGmt % 86400);  // Inicio del día
+   datetime dayStart = nowGmt - (nowGmt % 86400);  // Inicio del dÃ­a
    int secondsFromMidnight = (int)(nowGmt - dayStart);
    int sec = secondsFromMidnight % 60;
    
@@ -176,7 +176,7 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
    string tmpRel   = relFolder + fnameBase + ".tmp";
    string finalRel = relFolder + fnameBase + ".txt";
 
-   // Añadir EXPORT_TIME a la línea antes de escribir
+   // AÃ±adir EXPORT_TIME a la lÃ­nea antes de escribir
    string finalLine = evtLine + "|EXPORT_TIME=" + IntegerToString(exportTimeMs);
 
    // Usar FILE_BIN igual que LectorOrdenes (no FILE_TXT)
@@ -186,19 +186,19 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
    int h = FileOpen(tmpRel, flags);
    if(h == INVALID_HANDLE)
    {
-      Print("ERROR: FileOpen tmp falló: ", tmpRel, " err=", GetLastError(),
-            ". Asegúrate de que existe la carpeta: Common\\Files\\", relFolder);
+      Print("ERROR: FileOpen tmp fallÃ³: ", tmpRel, " err=", GetLastError(),
+            ". AsegÃºrate de que existe la carpeta: Common\\Files\\", relFolder);
       return false;
    }
 
-   // Convertir línea a UTF-8 igual que LectorOrdenes
+   // Convertir lÃ­nea a UTF-8 igual que LectorOrdenes
    uchar utf8Bytes[];
    StringToUTF8Bytes(finalLine, utf8Bytes);
    
    // Escribir bytes UTF-8
    FileWriteArray(h, utf8Bytes);
    
-   // Escribir salto de línea UTF-8 (\n = 0x0A) igual que LectorOrdenes (no \r\n)
+   // Escribir salto de lÃ­nea UTF-8 (\n = 0x0A) igual que LectorOrdenes (no \r\n)
    uchar newline[] = {0x0A};
    FileWriteArray(h, newline);
    
@@ -207,10 +207,10 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
    return AtomicPromoteTmpToTxt(tmpRel, finalRel);
 }
 
-// -------------------- Construcción de líneas de evento --------------------
+// -------------------- ConstrucciÃ³n de lÃ­neas de evento --------------------
 string BuildOpenLine(int ticket, string symbol, string typeStr, double lots, double sl, double tp, long eventTimeMs)
 {
-   // Si SL/TP son 0.0, usar string vacío (igual que LectorOrdenes)
+   // Si SL/TP son 0.0, usar string vacÃ­o (igual que LectorOrdenes)
    string sSL = (sl > 0.0 ? DoubleToString(sl, Digits) : "");
    string sTP = (tp > 0.0 ? DoubleToString(tp, Digits) : "");
    
@@ -230,56 +230,6 @@ string BuildModifyLine(int ticket, double slOld, double slNew, double tpOld, dou
 string BuildCloseLine(int ticket, long eventTimeMs)
 {
    return StringFormat("EVT|EVENT=CLOSE|TICKET=%d|EVENT_TIME=%lld", ticket, eventTimeMs);
-}
-
-string BuildOpenInvalidateByTime30SegLine(int ticket, string symbol, string typeStr, double lots, double sl, double tp, long eventTimeMs, int secondsElapsed)
-{
-   // Si SL/TP son 0.0, usar string vacío (igual que LectorOrdenes)
-   string sSL = (sl > 0.0 ? DoubleToString(sl, Digits) : "");
-   string sTP = (tp > 0.0 ? DoubleToString(tp, Digits) : "");
-   
-   return StringFormat("EVT|EVENT=OPEN_INVALIDATE_BYTIME30SEG|TICKET=%d|SYMBOL=%s|TYPE=%s|LOTS=%.2f|SL=%s|TP=%s|EVENT_TIME=%lld|INVALIDATION_REASON=Tiempo excedido|SECONDS_ELAPSED=%d",
-                       ticket, symbol, typeStr, lots, sSL, sTP, eventTimeMs, secondsElapsed);
-}
-
-// --- Escribe en Historico_Master.csv cuando una orden no se clona por > 30 segundos
-bool WriteToHistMaster(string csvLine)
-{
-   string histMasterRel = "V3\\Phoenix\\Historico_Master.csv";
-   
-   int flags = FILE_BIN | FILE_READ | FILE_WRITE;
-   if(InpUseCommonFiles) flags |= FILE_COMMON;
-   
-   int h = FileOpen(histMasterRel, flags);
-   if(h == INVALID_HANDLE)
-   {
-      // Si no existe, crear el archivo
-      flags = FILE_BIN | FILE_WRITE;
-      if(InpUseCommonFiles) flags |= FILE_COMMON;
-      h = FileOpen(histMasterRel, flags);
-      if(h == INVALID_HANDLE)
-      {
-         Print("ERROR: No se pudo abrir/crear Historico_Master.csv: ", histMasterRel, " err=", GetLastError());
-         return false;
-      }
-   }
-   
-   // Ir al final del archivo
-   FileSeek(h, 0, SEEK_END);
-   
-   // Convertir línea CSV a UTF-8
-   uchar utf8Bytes[];
-   StringToUTF8Bytes(csvLine, utf8Bytes);
-   
-   // Escribir bytes UTF-8
-   FileWriteArray(h, utf8Bytes);
-   
-   // Escribir salto de línea UTF-8 (\n = 0x0A)
-   uchar newline[] = {0x0A};
-   FileWriteArray(h, newline);
-   
-   FileClose(h);
-   return true;
 }
 
 // -------------------- Core --------------------
@@ -329,56 +279,21 @@ void ProcessOnce(bool forceEmitAllOpen)
             // Para OPEN: usar OrderOpenTime() convertido a milisegundos
             datetime openTime = OrderOpenTime();
             long eventTimeMs = (long)(openTime * 1000);
+
+            // Añadir OPEN_TIME_UTC_MS (epoch UTC ms) para que Python pueda comparar en UTC sin líos de huso horario.
+            // Offset servidor vs UTC (segundos): TimeCurrent() - TimeGMT()
+            int serverOffsetSec = (int)(TimeCurrent() - TimeGMT());
+            long openTimeUtcMs = (long)((openTime - serverOffsetSec) * 1000);
             
-            // Validar: solo emitir OPEN si han pasado 30 segundos o menos desde la apertura
-            datetime currentTime = TimeCurrent();
-            int secondsElapsed = (int)(currentTime - openTime);
-            
-            if(secondsElapsed <= 30)
-            {
-               Print("Ticket ", ticket, " clonado inferior a la regla de 30 segundos");
-               
-               string lineO = BuildOpenLine(ticket,
-                                            OrderSymbol(),
-                                            TypeToStr(OrderType()),
-                                            OrderLots(),
-                                            OrderStopLoss(),
-                                            OrderTakeProfit(),
-                                            eventTimeMs);
-               WriteSpoolEvent(lineO, ticket, "OPEN");
-            }
-            else
-            {
-               string openTimeStr = TimeToString(openTime, TIME_DATE|TIME_MINUTES|TIME_SECONDS);
-               string currentTimeStr = TimeToString(currentTime, TIME_DATE|TIME_MINUTES|TIME_SECONDS);
-               Print("Ticket ", ticket, " no clonado por regla mayor a 30 segundos. OpenTime: ", openTimeStr, " Hora actual: ", currentTimeStr, " Diferencia: ", secondsElapsed, " segundos");
-               
-               // Escribir en historico master cuando no se clona
-               datetime nowGmt = TimeGMT();
-               int ms = (int)(GetTickCount() % 1000);
-               long exportTimeMs = (long)(nowGmt * 1000) + ms;
-               long readTimeMs = exportTimeMs; // Mismo tiempo ya que se escribe directamente
-               long distributeTimeMs = exportTimeMs; // Mismo tiempo ya que se escribe directamente
-               
-               string sSL = (OrderStopLoss() > 0.0 ? DoubleToString(OrderStopLoss(), Digits) : "");
-               string sTP = (OrderTakeProfit() > 0.0 ? DoubleToString(OrderTakeProfit(), Digits) : "");
-               
-               // Formato CSV: OPEN_INVALIDATE_BYTIME30SEG;ticket;order_type;lots;symbol;sl;tp;Tiempo excedido;seconds_elapsed;event_time;export_time;read_time;distribute_time
-               string csvLine = StringFormat("OPEN_INVALIDATE_BYTIME30SEG;%d;%s;%.2f;%s;%s;%s;Tiempo excedido;%d;%lld;%lld;%lld;%lld",
-                                             ticket,
-                                             TypeToStr(OrderType()),
-                                             OrderLots(),
-                                             OrderSymbol(),
-                                             sSL,
-                                             sTP,
-                                             secondsElapsed,
-                                             eventTimeMs,
-                                             exportTimeMs,
-                                             readTimeMs,
-                                             distributeTimeMs);
-               
-               WriteToHistMaster(csvLine);
-            }
+            string lineO = BuildOpenLine(ticket,
+                                         OrderSymbol(),
+                                         TypeToStr(OrderType()),
+                                         OrderLots(),
+                                         OrderStopLoss(),
+                                         OrderTakeProfit(),
+                                         eventTimeMs);
+            lineO = lineO + "|OPEN_TIME_UTC_MS=" + StringFormat("%lld", openTimeUtcMs);
+            WriteSpoolEvent(lineO, ticket, "OPEN");
          }
       }
       else
@@ -451,8 +366,8 @@ int OnInit()
 
    Print("Extractor v1.02 (BUY/SELL) listo. FolderRel=", SpoolBaseRel(),
          " common=", (InpUseCommonFiles ? "true":"false"));
-   Print("Codificación UTF-8 igual que LectorOrdenes.mq4");
-   Print("Asegúrate de que existe la carpeta: Common\\Files\\", SpoolBaseRel());
+   Print("CodificaciÃ³n UTF-8 igual que LectorOrdenes.mq4");
+   Print("AsegÃºrate de que existe la carpeta: Common\\Files\\", SpoolBaseRel());
 
    return(INIT_SUCCEEDED);
 }
