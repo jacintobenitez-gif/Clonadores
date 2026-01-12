@@ -16,6 +16,8 @@ input bool   InpUseCommonFiles   = true;                 // escribir en Common\F
 input string InpSpoolRelFolder   = "V3\\Phoenix\\Spool\\"; // carpeta relativa dentro de Common\Files
 input int    InpThrottleMs       = 150;                  // mÃ­nimo ms entre evaluaciones
 input bool   InpEmitOpenOnInit   = true;                 // al iniciar, emite OPEN de lo ya abierto
+input int    InpTimerSeconds     = 1;                    // evaluar tambiÃ©n sin ticks (recomendado)
+input bool   InpDebug            = false;                // logs extra para diagnosticar (activar temporalmente)
 
 // -------------------- Globals --------------------
 int     g_prevTickets[];
@@ -24,12 +26,23 @@ double  g_prevTP[];
 
 uint    g_lastRunMs = 0;
 int     g_seq       = 0;
+int     g_dbgCycle  = 0;
+int     g_lastOrdersTotal = -1;
+long    g_lastTicketsHash = 0;
 
 // -------------------- Helpers --------------------
 bool Throttled()
 {
    uint nowMs = GetTickCount();
-   if((int)(nowMs - g_lastRunMs) < InpThrottleMs) return true;
+   // IMPORTANTE: no castear a int. GetTickCount() y restas de uint pueden desbordar
+   // y el cast a int puede volverlo negativo => throttled "para siempre".
+   if(InpThrottleMs <= 0)
+   {
+      g_lastRunMs = nowMs;
+      return false;
+   }
+   uint elapsed = nowMs - g_lastRunMs; // wrap-safe en unsigned
+   if(elapsed < (uint)InpThrottleMs) return true;
    g_lastRunMs = nowMs;
    return false;
 }
@@ -204,7 +217,16 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
    
    FileClose(h);
 
-   return AtomicPromoteTmpToTxt(tmpRel, finalRel);
+   bool ok = AtomicPromoteTmpToTxt(tmpRel, finalRel);
+   if(InpDebug)
+   {
+      Print("DEBUG WriteSpoolEvent: evtType=", evtType,
+            " ticket=", ticket,
+            " tmp=", tmpRel,
+            " final=", finalRel,
+            " ok=", (ok ? "true" : "false"));
+   }
+   return ok;
 }
 
 // -------------------- ConstrucciÃ³n de lÃ­neas de evento --------------------
@@ -235,12 +257,16 @@ string BuildCloseLine(int ticket, long eventTimeMs)
 // -------------------- Core --------------------
 void ProcessOnce(bool forceEmitAllOpen)
 {
+   g_dbgCycle++;
+   int totalNow = OrdersTotal();
+
    // 1) Estado actual (tickets + SL/TP) SOLO BUY/SELL
    int    curTickets[];
    double curSL[];
    double curTP[];
 
-   int total = OrdersTotal();
+   long ticketsHash = 1469598103934665603; // FNV-1a offset basis (aprox)
+   int total = totalNow;
    for(int i=0; i<total; i++)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
@@ -254,6 +280,10 @@ void ProcessOnce(bool forceEmitAllOpen)
       double sl  = OrderStopLoss();
       double tp  = OrderTakeProfit();
 
+      // hash ligero para detectar cambios de tickets sin spamear logs
+      ticketsHash ^= (long)ticket;
+      ticketsHash *= 1099511628211;
+
       int n = ArraySize(curTickets);
       ArrayResize(curTickets, n+1);
       ArrayResize(curSL,      n+1);
@@ -263,6 +293,31 @@ void ProcessOnce(bool forceEmitAllOpen)
       curSL[n]      = sl;
       curTP[n]      = tp;
    }
+
+   bool changed = (totalNow != g_lastOrdersTotal) || (ticketsHash != g_lastTicketsHash);
+   if(InpDebug && (changed || forceEmitAllOpen))
+   {
+      Print("DEBUG ProcessOnce: forceEmitAllOpen=", (forceEmitAllOpen ? "true":"false"),
+            " OrdersTotal=", totalNow,
+            " prevTickets=", ArraySize(g_prevTickets),
+            " curMarketTickets=", ArraySize(curTickets),
+            " Account=", AccountNumber(),
+            " SymbolChart=", Symbol());
+      for(int k=0; k<ArraySize(curTickets); k++)
+      {
+         int t = curTickets[k];
+         if(OrderSelect(t, SELECT_BY_TICKET, MODE_TRADES))
+         {
+            Print("DEBUG Scan: ticket=", t,
+                  " sym=", OrderSymbol(),
+                  " type=", TypeToStr(OrderType()),
+                  " magic=", OrderMagicNumber(),
+                  " openTime=", TimeToString(OrderOpenTime(), TIME_DATE|TIME_SECONDS));
+         }
+      }
+   }
+   g_lastOrdersTotal = totalNow;
+   g_lastTicketsHash = ticketsHash;
 
    // 2) OPEN + MODIFY
    for(int c=0; c<ArraySize(curTickets); c++)
@@ -276,6 +331,9 @@ void ProcessOnce(bool forceEmitAllOpen)
       {
          if(inTrades && IsMarketBuySell(OrderType()))
          {
+            if(InpDebug)
+               Print("DEBUG OPEN candidate: ticket=", ticket, " pIdx=", pIdx, " force=", (forceEmitAllOpen ? "true":"false"));
+
             // Para OPEN: usar OrderOpenTime() convertido a milisegundos
             datetime openTime = OrderOpenTime();
             long eventTimeMs = (long)(openTime * 1000);
@@ -299,7 +357,9 @@ void ProcessOnce(bool forceEmitAllOpen)
                                          eventTimeMs);
             lineO = lineO + "|OPEN_TIME_UTC_MS=" + StringFormat("%lld", openTimeUtcMs);
             lineO = lineO + "|OPEN_TIME_MT_PC_MS=" + StringFormat("%lld", openTimeMtPcMs);
-            WriteSpoolEvent(lineO, ticket, "OPEN");
+            bool okW = WriteSpoolEvent(lineO, ticket, "OPEN");
+            if(InpDebug)
+               Print("DEBUG OPEN write: ticket=", ticket, " ok=", (okW ? "true":"false"));
          }
       }
       else
@@ -374,13 +434,36 @@ int OnInit()
          " common=", (InpUseCommonFiles ? "true":"false"));
    Print("CodificaciÃ³n UTF-8 igual que LectorOrdenes.mq4");
    Print("AsegÃºrate de que existe la carpeta: Common\\Files\\", SpoolBaseRel());
+   Print("Timer: ", InpTimerSeconds, "s (para detectar OPEN aunque no haya ticks)");
+
+   EventSetTimer(InpTimerSeconds);
 
    return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
 }
 
 void OnTick()
 {
    if(Throttled()) return;
+   ProcessOnce(false);
+}
+
+void OnTimer()
+{
+   if(Throttled()) return;
+   if(InpDebug)
+   {
+      // Heartbeat de diagnóstico: confirma que OnTimer corre y qué ve MT4 como OrdersTotal()
+      Print("DEBUG OnTimer: Account=", AccountNumber(),
+            " Server=", AccountServer(),
+            " OrdersTotal=", OrdersTotal(),
+            " TimeCurrent=", TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+            " TimeLocal=", TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS));
+   }
    ProcessOnce(false);
 }
 //+------------------------------------------------------------------+
