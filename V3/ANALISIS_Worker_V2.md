@@ -1,8 +1,13 @@
-# ANÁLISIS FUNCIONAL – Worker.mq4 V2
+# ANÁLISIS FUNCIONAL – WorkerV2.mq4 (V3)
 
 ## 1. OBJETIVO
 
-Rediseño completo del Worker.mq4 para usar una única estructura en memoria (`OpenLogInfo`) que refleje la realidad de las operaciones abiertas en MetaTrader 4. Eliminación de redundancias y simplificación del código manteniendo toda la funcionalidad esencial.
+Implementación **en MQL4** de un worker que:
+- Lee `cola_WORKER_<AccountNumber>.csv` en `Common\Files\V3\Phoenix\`
+- Ejecuta eventos `OPEN / MODIFY / CLOSE`
+- Mantiene un estado unificado en memoria (`OpenLogInfo`)
+- Historiza en `historico_WORKER_<AccountNumber>.csv`
+- Notifica vía `SendNotification()`
 
 ---
 
@@ -10,10 +15,11 @@ Rediseño completo del Worker.mq4 para usar una única estructura en memoria (`O
 
 ### 2.1. Estructura `OpenLogInfo`
 
-```mql5
+```mql4
 struct OpenLogInfo
 {
    int ticketMaster;         // MagicNumber (int) - identificador del maestro
+   string ticketMasterSource; // "MAGIC" | "COMMENT" | "ORDER_TICKET"
    int ticketWorker;         // Ticket de la orden en MT4
    int magicNumber;          // MagicNumber (para verificación/visualización)
    
@@ -29,13 +35,14 @@ struct OpenLogInfo
 ```
 
 **Observaciones:**
-- `ticketMaster` es `int` (MagicNumber), no string
+- `ticketMaster` es `int`
+- `ticketMasterSource` indica cómo se determinó `ticketMaster` al sincronizar con operaciones ya abiertas
 - `profit` NO se guarda en la estructura (se calcula al cerrar)
 - No hay campo `isTemporary` (si OPEN falla, simplemente no se guarda)
 
 ### 2.2. Array global en memoria
 
-```mql5
+```mql4
 OpenLogInfo g_openLogs[];     // Array dinámico para guardar operaciones abiertas
 int g_openLogsCount = 0;      // Contador de operaciones guardadas
 ```
@@ -55,8 +62,10 @@ int g_openLogsCount = 0;      // Contador de operaciones guardadas
 2. **Para cada orden** (TODAS las órdenes abiertas):
    - Obtener `ticketWorker` = `OrderTicket()`
    - Obtener `magicNumber` = `OrderMagicNumber()`
-   - `ticketMaster` = `magicNumber`
-   - **Nota:** No habrá órdenes manuales, todas tienen MagicNumber asignado
+   - Determinar `ticketMaster` y `ticketMasterSource`:
+     - Si `magicNumber > 0`: `ticketMaster = magicNumber`, `ticketMasterSource="MAGIC"`
+     - Si `magicNumber == 0` y `OrderComment()` es numérico: `ticketMaster = int(comment)`, `ticketMasterSource="COMMENT"`
+     - Si `magicNumber == 0` y `OrderComment()` no es numérico: `ticketMaster = OrderTicket()`, `ticketMasterSource="ORDER_TICKET"`
    - Obtener resto de campos de la orden:
      - `symbol` = `OrderSymbol()`
      - `orderType` = `OrderType()`
@@ -70,7 +79,8 @@ int g_openLogsCount = 0;      // Contador de operaciones guardadas
 
 ### 3.2. Visualización inicial
 
-Formato: `TM: ticketMaster || TW: ticketWorker || MN: magicNumber`
+Formato (en el gráfico):  
+`TM: ticketMaster (source=...) || TW: ticketWorker || MN: magicNumber || SYMBOL: symbol`
 
 Ejemplo:
 ```
@@ -105,7 +115,7 @@ Total: 3 posiciones
      - Si `InpFondeo = false`: `LotFromCapital(AccountBalance(), symbol)`
 
 3. **Ejecutar `OrderSend()`:**
-   ```mql5
+   ```mql4
    int type = (orderType=="BUY" ? OP_BUY : OP_SELL);
    double price = (type==OP_BUY ? Ask : Bid);
    string commentStr = IntegerToString(ticketMaster);  // Comment = ticketMaster como string
@@ -163,6 +173,7 @@ Total: 3 posiciones
 1. **Parser lee línea del archivo:**
    ```
    MODIFY;ticketMaster;sl;tp
+   (o también puede llegar como: MODIFY;ticketMaster;;;;;sl;tp)
    ```
 
 2. **Buscar en `g_openLogs[]` por `ticketMaster`:**
