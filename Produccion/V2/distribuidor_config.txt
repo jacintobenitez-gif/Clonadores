@@ -1,0 +1,27 @@
+# Configuración de Distribuidor.py (hot-reload)
+# Líneas vacías o que empiezan por # se ignoran
+# Formato: clave=valor
+
+# Ruta a Common\Files (usar subcarpeta V3\Phoenix)
+common_files_dir=C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files
+
+# Carpeta del spool (relativa a common_files_dir)
+spool_folder=V3\Phoenix\Spool
+
+# Lista de workers (una línea por worker)
+# Formato: worker_id=<numero_cuenta>|<symbol_origen>=<symbol_destino>|...
+worker_id=3037589|xauusd-std=GOLD
+worker_id=511029358|xauusd-std=xauusd
+worker_id=3037735|xauusd-std=GOLD
+
+
+# Intervalo de sondeo en segundos
+poll_seconds=0.25
+
+# Intervalo de recarga de config en minutos
+reload_minutes=15
+
+
+
+
+
