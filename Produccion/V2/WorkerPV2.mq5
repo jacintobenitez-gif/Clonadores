@@ -25,7 +25,6 @@ string BASE_SUBDIR   = "PROD\\Phoenix\\V2";
 string g_workerId    = "";
 string g_queueFile   = "";
 string g_estadosFile = "";
-string g_historyFile = "";
 
 datetime g_lastSyncTime = 0;
 uint     g_lastRunMs    = 0;   // Para throttle de OnTick
@@ -152,13 +151,6 @@ void Notify(const string msg)
    long login = (long)AccountInfoInteger(ACCOUNT_LOGIN);
    string full = "W: " + LongToStr(login) + " - " + msg;
    SendNotification(full);
-}
-
-// -------------------- Time ms (compatible) --------------------
-long NowMs()
-{
-   datetime t = TimeCurrent();
-   return (long)(t * 1000) + (GetTickCount() % 1000);
 }
 
 // -------------------- UTF-8 helpers (binario) --------------------
@@ -669,71 +661,6 @@ int ReadQueue(const string relPath, string &lines[])
    return count;
 }
 
-// -------------------- History (opcional, se mantiene para debug) --------------------
-void EnsureHistoryHeader()
-{
-   if(FileIsExist(g_historyFile, FILE_COMMON)) return;
-
-   int h = FileOpen(g_historyFile, FILE_BIN|FILE_WRITE|FILE_COMMON);
-   if(h == INVALID_HANDLE)
-   {
-      Print("No se pudo crear historico: ", g_historyFile, " err=", GetLastError());
-      return;
-   }
-   string header = "worker_exec_time;worker_read_time;resultado;event_type;ticketMaster;ticketWorker;order_type;lots;symbol;open_price;open_time;sl;tp;close_price;close_time;profit";
-   uchar b[];
-   StringToUTF8Bytes(header, b);
-   FileWriteArray(h, b);
-   uchar nl[] = {0x0A};
-   FileWriteArray(h, nl);
-   FileClose(h);
-}
-
-int SymbolDigitsSafe(const string sym)
-{
-   if(sym == "")
-      return (int)_Digits;
-   long d = 0;
-   if(SymbolInfoInteger(sym, SYMBOL_DIGITS, d))
-      return (int)d;
-   return (int)_Digits;
-}
-
-void AppendHistory(const string result, const string eventType, const int ticketMaster, const ulong ticketWorker, const string orderType, const double lots, const string sym, double openPrice=0.0, datetime openTime=0, double slVal=0.0, double tpVal=0.0, double closePrice=0.0, datetime closeTime=0, double profit=0.0, long workerReadTimeMs=0, long workerExecTimeMs=0)
-{
-   EnsureHistoryHeader();
-
-   int h = FileOpen(g_historyFile, FILE_BIN|FILE_READ|FILE_WRITE|FILE_COMMON|FILE_SHARE_WRITE);
-   if(h == INVALID_HANDLE)
-   {
-      Print("No se pudo abrir historico: ", g_historyFile, " err=", GetLastError());
-      return;
-   }
-   FileSeek(h, 0, SEEK_END);
-
-   int symDigits = SymbolDigitsSafe(sym);
-
-   string sOpenPrice  = (openPrice!=0.0 ? DoubleToString(openPrice, symDigits) : "");
-   string sOpenTime   = (openTime>0 ? TimeToString(openTime, TIME_DATE|TIME_SECONDS) : "");
-   string sClosePrice = (closePrice!=0.0 ? DoubleToString(closePrice, symDigits) : "");
-   string sCloseTime  = (closeTime>0 ? TimeToString(closeTime, TIME_DATE|TIME_SECONDS) : "");
-   string sSl = (slVal>0 ? DoubleToString(slVal, symDigits) : "");
-   string sTp = (tpVal>0 ? DoubleToString(tpVal, symDigits) : "");
-   string sProfit = (profit!=0.0 ? DoubleToString(profit, 2) : "");
-
-   string line = LongToStr(workerExecTimeMs) + ";" + LongToStr(workerReadTimeMs) + ";" +
-                 result + ";" + eventType + ";" + IntegerToString(ticketMaster) + ";" + LongToStr((long)ticketWorker) + ";" +
-                 orderType + ";" + DoubleToString(lots, 2) + ";" + sym + ";" +
-                 sOpenPrice + ";" + sOpenTime + ";" + sSl + ";" + sTp + ";" + sClosePrice + ";" + sCloseTime + ";" + sProfit;
-
-   uchar utf8[];
-   StringToUTF8Bytes(line, utf8);
-   FileWriteArray(h, utf8);
-   uchar nl[] = {0x0A};
-   FileWriteArray(h, nl);
-   FileClose(h);
-}
-
 // -------------------- Chart display --------------------
 void DeleteObjectsByPrefix(const long chartId, const string prefix)
 {
@@ -937,7 +864,6 @@ int OnInit()
    g_workerId    = LongToStr((long)AccountInfoInteger(ACCOUNT_LOGIN));
    g_queueFile   = CommonRelative("cola_WORKER_" + g_workerId + ".csv");
    g_estadosFile = CommonRelative("estados_WORKER_" + g_workerId + ".csv");
-   g_historyFile = CommonRelative("historico_WORKER_" + g_workerId + ".csv");
 
    if(!EnsureBaseFolder()) return INIT_FAILED;
 
@@ -995,8 +921,6 @@ void ProcessQueue()
    // 2. Cargar estados procesados en memoria
    CargarEstadosProcesados();
 
-   long workerReadTimeMs = NowMs();
-
    string lines[];
    int total = ReadQueue(g_queueFile, lines);
    if(total <= 0) return;
@@ -1038,7 +962,6 @@ void ProcessQueue()
             string msg = "Ticket: " + IntegerToString(ticketMaster) + " - OPEN FALLO: SymbolSelect (" + IntegerToString(errCode) + ") " + ErrorText(errCode);
             Notify(msg);
             AppendEstado(ticketMaster, "OPEN", 2, "ERR_SYMBOL", msg);
-            AppendHistory(msg, "OPEN", ticketMaster, 0, orderTypeStr, lots, sym, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             continue;
          }
 
@@ -1046,7 +969,6 @@ void ProcessQueue()
          if(existing > 0)
          {
             AppendEstado(ticketMaster, "OPEN", 2, "OK_YA_EXISTE", LongToStr((long)existing));
-            AppendHistory("Ya existe operacion abierta", "OPEN", ticketMaster, existing, orderTypeStr, lots, sym, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             continue;
          }
 
@@ -1060,7 +982,6 @@ void ProcessQueue()
             string errBase = "ERROR: OPEN (SymbolInfoTick " + IntegerToString(err) + ") " + ErrorText(err);
             Notify("Ticket: " + IntegerToString(ticketMaster) + " - " + errBase);
             AppendEstado(ticketMaster, "OPEN", 2, "ERR_TICK", errBase);
-            AppendHistory(errBase, "OPEN", ticketMaster, 0, orderTypeStr, lots, sym, 0, 0, slVal, tpVal, 0, 0, 0, workerReadTimeMs, NowMs());
             continue;
          }
 
@@ -1069,7 +990,6 @@ void ProcessQueue()
 
          MqlTradeResult res;
          bool ok = SendDeal(sym, type, lotsWorker, price, slVal, tpVal, ticketMaster, commentStr, 0, res);
-         long workerExecTimeMs = NowMs();
 
          if(!ok || (res.retcode != TRADE_RETCODE_DONE && res.retcode != TRADE_RETCODE_PLACED))
          {
@@ -1077,7 +997,6 @@ void ProcessQueue()
             string errBase = "ERROR: OPEN (" + IntegerToString(err) + ") " + ErrorText(err) + " retcode=" + IntegerToString((int)res.retcode);
             Notify("Ticket: " + IntegerToString(ticketMaster) + " - " + errBase);
             AppendEstado(ticketMaster, "OPEN", 2, "ERR_" + IntegerToString(err), errBase);
-            AppendHistory(errBase, "OPEN", ticketMaster, 0, orderTypeStr, lots, sym, 0, 0, slVal, tpVal, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
             continue;
          }
 
@@ -1101,12 +1020,10 @@ void ProcessQueue()
             DisplayOpenLogsInChart();
 
             AppendEstado(ticketMaster, "OPEN", 2, "OK", LongToStr((long)posTicket));
-            AppendHistory("EXITOSO", "OPEN", ticketMaster, posTicket, orderTypeStr, lots, sym, log.openPrice, log.openTime, log.sl, log.tp, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
          }
          else
          {
             AppendEstado(ticketMaster, "OPEN", 2, "OK", "");
-            AppendHistory("OPEN OK pero PositionSelect fallo", "OPEN", ticketMaster, 0, orderTypeStr, lots, sym, 0, 0, slVal, tpVal, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
          }
       }
       else if(eventType == "MODIFY")
@@ -1115,7 +1032,6 @@ void ProcessQueue()
          if(idx < 0)
          {
             AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
-            AppendHistory("MODIFY fallido. No se encontro: " + IntegerToString(ticketMaster), "MODIFY", ticketMaster, 0, "", 0, "", 0, 0, slVal, tpVal, 0, 0, 0, workerReadTimeMs, 0);
             continue;
          }
 
@@ -1127,7 +1043,6 @@ void ProcessQueue()
             RemoveOpenLog(ticketMaster);
             DisplayOpenLogsInChart();
             AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
-            AppendHistory("MODIFY fallido: Orden ya cerrada", "MODIFY", ticketMaster, ticketWorker, "", 0, symLog, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             continue;
          }
@@ -1137,7 +1052,6 @@ void ProcessQueue()
 
          MqlTradeResult res;
          bool ok = SendSLTP(symLog, ticketWorker, newSL, newTP, res);
-         long workerExecTimeMs = NowMs();
 
          if(ok && (res.retcode == TRADE_RETCODE_DONE || res.retcode == TRADE_RETCODE_DONE_PARTIAL))
          {
@@ -1145,7 +1059,6 @@ void ProcessQueue()
             DisplayOpenLogsInChart();
             string resTxt = "MODIFY OK SL=" + DoubleToString(newSL, 2) + " TP=" + DoubleToString(newTP, 2);
             AppendEstado(ticketMaster, "MODIFY", 2, "OK", "");
-            AppendHistory(resTxt, "MODIFY", ticketMaster, ticketWorker, "", 0, symLog, 0, 0, newSL, newTP, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
             RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
          }
          else
@@ -1156,7 +1069,6 @@ void ProcessQueue()
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
                AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
-               AppendHistory("MODIFY fallido: Orden ya cerrada", "MODIFY", ticketMaster, ticketWorker, "", 0, symLog, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
                RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             }
             else
@@ -1174,7 +1086,6 @@ void ProcessQueue()
                      AddTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
                   }
                }
-               AppendHistory(errTxt, "MODIFY", ticketMaster, ticketWorker, "", 0, symLog, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
             }
          }
       }
@@ -1187,12 +1098,10 @@ void ProcessQueue()
             if(historyDeal > 0)
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "OK_YA_CERRADA", "");
-               AppendHistory("Orden ya estaba cerrada", "CLOSE", ticketMaster, historyDeal, "", 0, "", 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             }
             else
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "ERR_NO_ENCONTRADA", "");
-               AppendHistory("Close fallido. No se encontro: " + IntegerToString(ticketMaster), "CLOSE", ticketMaster, 0, "", 0, "", 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             }
             continue;
          }
@@ -1208,13 +1117,11 @@ void ProcessQueue()
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
                AppendEstado(ticketMaster, "CLOSE", 2, "OK_YA_CERRADA", "");
-               AppendHistory("Orden ya estaba cerrada", "CLOSE", ticketMaster, ticketWorker, "", 0, symLog, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
                RemoveTicket(IntegerToString(ticketMaster), g_notifCloseTickets, g_notifCloseCount);
             }
             else
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "ERR_NO_ENCONTRADA", "");
-               AppendHistory("Close fallido. No se encontro: " + IntegerToString(ticketMaster), "CLOSE", ticketMaster, 0, "", 0, "", 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             }
             continue;
          }
@@ -1239,7 +1146,6 @@ void ProcessQueue()
                   AddTicket(IntegerToString(ticketMaster), g_notifCloseTickets, g_notifCloseCount);
                }
             }
-            AppendHistory(errTxt, "CLOSE", ticketMaster, ticketWorker, "", 0, symLog, 0, 0, 0, 0, 0, 0, profitBefore, workerReadTimeMs, NowMs());
             continue;
          }
 
@@ -1248,12 +1154,10 @@ void ProcessQueue()
 
          MqlTradeResult res;
          bool ok = SendDeal(symLog, closeType, volume, closePrice, 0.0, 0.0, (int)PositionGetInteger(POSITION_MAGIC), PositionGetString(POSITION_COMMENT), ticketWorker, res);
-         long workerExecTimeMs = NowMs();
 
          if(ok && (res.retcode == TRADE_RETCODE_DONE || res.retcode == TRADE_RETCODE_DONE_PARTIAL))
          {
             AppendEstado(ticketMaster, "CLOSE", 2, "OK", DoubleToString(profitBefore, 2));
-            AppendHistory("CLOSE OK", "CLOSE", ticketMaster, ticketWorker, "", 0, symLog, 0, 0, 0, 0, closePrice, TimeCurrent(), profitBefore, workerReadTimeMs, workerExecTimeMs);
             RemoveTicket(IntegerToString(ticketMaster), g_notifCloseTickets, g_notifCloseCount);
             RemoveOpenLog(ticketMaster);
             DisplayOpenLogsInChart();
@@ -1266,7 +1170,6 @@ void ProcessQueue()
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
                AppendEstado(ticketMaster, "CLOSE", 2, "OK_YA_CERRADA", "");
-               AppendHistory("CLOSE fallido: Orden ya cerrada", "CLOSE", ticketMaster, ticketWorker, "", 0, symLog, 0, 0, 0, 0, closePrice, TimeCurrent(), profitBefore, workerReadTimeMs, workerExecTimeMs);
                RemoveTicket(IntegerToString(ticketMaster), g_notifCloseTickets, g_notifCloseCount);
             }
             else
@@ -1284,7 +1187,6 @@ void ProcessQueue()
                      AddTicket(IntegerToString(ticketMaster), g_notifCloseTickets, g_notifCloseCount);
                   }
                }
-               AppendHistory(errTxt, "CLOSE", ticketMaster, ticketWorker, "", 0, symLog, 0, 0, 0, 0, closePrice, TimeCurrent(), profitBefore, workerReadTimeMs, workerExecTimeMs);
             }
          }
       }
