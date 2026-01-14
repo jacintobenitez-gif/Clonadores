@@ -4,7 +4,7 @@
 //|  ARQUITECTURA APPEND-ONLY: Elimina race condition                |
 //|  - cola_WORKER_XXX.csv: Solo lectura (Distribuidor escribe)      |
 //|  - estados_WORKER_XXX.csv: Solo escritura append (Worker)        |
-//|  Lee cola_WORKER_<account>.csv (Common\\Files\\V3\\Phoenix)      |
+//|  Lee cola_WORKER_<account>.csv (Common\\Files\\PROD\\Phoenix\\V2)|
 //|  Ejecuta OPEN / MODIFY / CLOSE, historiza y notifica             |
 //+------------------------------------------------------------------+
 #property strict
@@ -20,7 +20,7 @@ input int    InpTimerSeconds  = 1;
 input int    InpSyncSeconds   = 10;     // cada N segundos recalcula memoria desde MT4
 
 // -------------------- Paths (Common\\Files) --------------------
-string BASE_SUBDIR   = "V3\\Phoenix";
+string BASE_SUBDIR   = "PROD\\Phoenix\\V2";
 string g_workerId    = "";
 string g_queueFile   = "";
 string g_estadosFile = "";
@@ -1167,4 +1167,5 @@ void OnTimer()
    // La cola es append-only (Distribuidor) y los estados son append-only (Worker).
    // La purga nocturna del Distribuidor limpiará ambos archivos.
 }
+
 

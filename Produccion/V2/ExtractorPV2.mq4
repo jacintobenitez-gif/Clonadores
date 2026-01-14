@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  ExtractorPV2.mq4 |
-//|  Spool por evento en Common\Files\V3\Phoenix\Spool                  |
+//|  Spool por evento en Common\Files\PROD\Phoenix\V2\Spool             |
 //|  SOLO MARKET: BUY / SELL                                            |
 //|  OPEN:   ticket + symbol + type + lots + SL + TP                    |
 //|  MODIFY: ticket + SL_OLD/SL_NEW + TP_OLD/TP_NEW                     |
@@ -13,7 +13,7 @@
 
 // -------------------- Inputs --------------------
 input bool   InpUseCommonFiles   = true;                 // escribir en Common\Files (recomendado)
-input string InpSpoolRelFolder   = "V3\\Phoenix\\Spool\\"; // carpeta relativa dentro de Common\Files
+input string InpSpoolRelFolder   = "PROD\\Phoenix\\V2\\Spool\\"; // carpeta relativa dentro de Common\Files
 input int    InpThrottleMs       = 150;                  // mínimo ms entre evaluaciones
 input bool   InpEmitOpenOnInit   = true;                 // al iniciar, emite OPEN de lo ya abierto
 input int    InpTimerSeconds     = 1;                    // evaluar también sin ticks (recomendado)
@@ -467,4 +467,5 @@ void OnTimer()
    ProcessOnce(false);
 }
 //+------------------------------------------------------------------+
+
 

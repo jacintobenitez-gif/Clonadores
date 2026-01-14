@@ -2,11 +2,11 @@
 # Líneas vacías o que empiezan por # se ignoran
 # Formato: clave=valor
 
-# Ruta a Common\Files (usar subcarpeta V3\Phoenix)
+# Ruta a Common\Files (usar subcarpeta PROD\Phoenix\V2)
 common_files_dir=C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files
 
 # Carpeta del spool (relativa a common_files_dir)
-spool_folder=V3\Phoenix\Spool
+spool_folder=PROD\Phoenix\V2\Spool
 
 # Lista de workers (una línea por worker)
 # Formato: worker_id=<numero_cuenta>|<symbol_origen>=<symbol_destino>|...
@@ -20,6 +20,7 @@ poll_seconds=0.25
 
 # Intervalo de recarga de config en minutos
 reload_minutes=15
+
 
 
 

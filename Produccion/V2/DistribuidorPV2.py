@@ -1,9 +1,9 @@
 """
-DistribuidorPV2.py (V3 Spool)
------------------------------
+DistribuidorPV2.py (PROD V2 Spool)
+----------------------------------
 
 Servicio 24/7 que:
-- Escanea eventos del spool generados por Extractor.mq4 (V3\Phoenix\Spool\)
+- Escanea eventos del spool generados por Extractor.mq4 (PROD\Phoenix\V2\Spool\)
 - Parsea formato pipe-separated: EVT|EVENT=OPEN|TICKET=123|...
 - Convierte a CSV mínimo para workers
 - Distribuye cada evento a todas las colas `cola_WORKER_XX.csv`
@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import List, Optional, Dict
 
 # Configuración por defecto
-DEFAULT_SPOOL_FOLDER = "V3\\Phoenix\\Spool"
+DEFAULT_SPOOL_FOLDER = "PROD\\Phoenix\\V2\\Spool"
 DEFAULT_WORKER_IDS = ["01"]
 DEFAULT_POLL_SECONDS = 1.0
 CONFIG_FILENAME = "distribuidor_config.txt"
@@ -64,7 +64,7 @@ def load_file_config(cfg_path: Path) -> dict:
     Lee un fichero plano key=value (una clave por línea).
     Formato esperado:
       common_files_dir=C:\\Users\\...\\Common\\Files
-      spool_folder=V3\\Phoenix\\Spool
+      spool_folder=PROD\\Phoenix\\V2\\Spool
       worker_ids=01,02,03
       worker_id=71617942|xaudusd-std=XAUUSD|eurusd-std=EURUSD
       poll_seconds=1.0
@@ -538,7 +538,7 @@ def process_spool_event(event_path: Path, config: Config) -> bool:
                 )
                 valid_lines = [invalid_csv + "\n"]
 
-                hist_master_path = config.common_dir / "V3" / "Phoenix" / "Historico_Master.csv"
+                hist_master_path = config.common_dir / "PROD" / "Phoenix" / "V2" / "Historico_Master.csv"
                 distribute_time_ms = str(now_ms_int)
                 # Para el histórico master, usar como event_time la hora real de apertura (UTC) si es válida,
                 # para evitar inconsistencias con EVENT_TIME (server time) del archivo.
@@ -576,13 +576,13 @@ def process_spool_event(event_path: Path, config: Config) -> bool:
         
         # 4. Si es OPEN_INVALIDATE_BYTIME30SEG, escribir directamente al histórico master sin distribuir
         if event_type == "OPEN_INVALIDATE_BYTIME30SEG":
-            hist_master_path = config.common_dir / "V3" / "Phoenix" / "Historico_Master.csv"
+            hist_master_path = config.common_dir / "PROD" / "Phoenix" / "V2" / "Historico_Master.csv"
             distribute_time_ms = str(int(time.time() * 1000))
             append_hist_master(valid_lines, hist_master_path, event_time_ms, export_time_ms, read_time_ms, distribute_time_ms)
             print(f"[OK] Orden invalidada por tiempo registrada en histórico: {event_path.name} (EVENT={event_type} TICKET={ticket})")
         else:
-            # 5. Distribuir a workers (en V3/Phoenix) para eventos normales
-            queues_dir = config.common_dir / "V3" / "Phoenix"
+            # 5. Distribuir a workers (en PROD/Phoenix/V2) para eventos normales
+            queues_dir = config.common_dir / "PROD" / "Phoenix" / "V2"
             
             # Capturar distribute_time justo antes de distribuir
             distribute_time_ms = str(int(time.time() * 1000))
@@ -596,8 +596,8 @@ def process_spool_event(event_path: Path, config: Config) -> bool:
                 return False
             
             # 7. Escribir históricos SOLO si la distribución fue exitosa
-            hist_master_path = config.common_dir / "V3" / "Phoenix" / "Historico_Master.csv"
-            hist_clonacion_path = config.common_dir / "V3" / "Phoenix" / "historico_clonacion.csv"
+            hist_master_path = config.common_dir / "PROD" / "Phoenix" / "V2" / "Historico_Master.csv"
+            hist_clonacion_path = config.common_dir / "PROD" / "Phoenix" / "V2" / "historico_clonacion.csv"
             
             append_hist_master(valid_lines, hist_master_path, event_time_ms, export_time_ms, read_time_ms, distribute_time_ms)
             append_hist_clonacion(valid_lines, config.worker_ids, status, hist_clonacion_path)
@@ -669,7 +669,7 @@ def purga_nocturna(config: Config) -> None:
        g. Escribir archivos limpios
        h. Borrar .lck
     """
-    phoenix_dir = config.common_dir / "V3" / "Phoenix"
+    phoenix_dir = config.common_dir / "PROD" / "Phoenix" / "V2"
     
     print(f"[PURGA] Iniciando purga nocturna para {len(config.worker_ids)} workers...")
     
@@ -857,4 +857,5 @@ def run_service() -> None:
 
 if __name__ == "__main__":
     run_service()
+
 
