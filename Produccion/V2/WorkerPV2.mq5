@@ -452,6 +452,7 @@ void SetEstado(const string key, int estado)
 }
 
 // Escribe estado a archivo (append-only)
+// NOTA: timestamp en milisegundos epoch UTC para trazabilidad precisa
 void AppendEstado(int ticketMaster, string eventType, int estado, string resultado, string extra)
 {
    string key = IntegerToString(ticketMaster) + "_" + eventType;
@@ -474,7 +475,11 @@ void AppendEstado(int ticketMaster, string eventType, int estado, string resulta
       return;
    }
    
-   string timestamp = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
+   // Timestamp en milisegundos epoch UTC (compatible con Distribuidor Python)
+   // TimeGMT() retorna segundos UTC, multiplicamos por 1000 para milisegundos
+   long timestampMs = (long)TimeGMT() * 1000;
+   string timestamp = LongToStr(timestampMs);
+   
    string line = IntegerToString(ticketMaster) + ";" +
                  eventType + ";" +
                  IntegerToString(estado) + ";" +

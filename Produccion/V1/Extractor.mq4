@@ -5,8 +5,8 @@
 //|  OPEN:   ticket + symbol + type + lots + SL + TP                    |
 //|  MODIFY: ticket + SL_OLD/SL_NEW + TP_OLD/TP_NEW                     |
 //|  CLOSE:  ticket                                                     |
-//|  Escritura atÃ³mica: .tmp -> .txt                                    |
-//|  CodificaciÃ³n UTF-8 igual que LectorOrdenes.mq4                    |
+//|  Escritura atómica: .tmp -> .txt                                    |
+//|  Codificación UTF-8 igual que LectorOrdenes.mq4                    |
 //+------------------------------------------------------------------+
 #property strict
 #property version   "1.02"
@@ -14,9 +14,9 @@
 // -------------------- Inputs --------------------
 input bool   InpUseCommonFiles   = true;                 // escribir en Common\Files (recomendado)
 input string InpSpoolRelFolder   = "V3\\Phoenix\\Spool\\"; // carpeta relativa dentro de Common\Files
-input int    InpThrottleMs       = 150;                  // mÃ­nimo ms entre evaluaciones
+input int    InpThrottleMs       = 150;                  // mínimo ms entre evaluaciones
 input bool   InpEmitOpenOnInit   = true;                 // al iniciar, emite OPEN de lo ya abierto
-input int    InpTimerSeconds     = 1;                    // evaluar tambiÃ©n sin ticks (recomendado)
+input int    InpTimerSeconds     = 1;                    // evaluar también sin ticks (recomendado)
 input bool   InpDebug            = false;                // logs extra para diagnosticar (activar temporalmente)
 
 // -------------------- Globals --------------------
@@ -160,7 +160,7 @@ bool AtomicPromoteTmpToTxt(string tmpRel, string finalRel)
    return true;
 }
 
-// --- Escribe un fichero por evento (spool) con codificaciÃ³n UTF-8 igual que LectorOrdenes
+// --- Escribe un fichero por evento (spool) con codificación UTF-8 igual que LectorOrdenes
 bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
 {
    string relFolder = SpoolBaseRel();
@@ -169,15 +169,15 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
    int ms = (int)(GetTickCount() % 1000);
    
    // Calcular export_time en milisegundos desde epoch (1970.01.01 00:00:00)
-   // datetime es segundos desde epoch, multiplicar por 1000 y aÃ±adir milisegundos
+   // datetime es segundos desde epoch, multiplicar por 1000 y añadir milisegundos
    long exportTimeMs = (long)(nowGmt * 1000) + ms;
 
    g_seq++;
 
-   // Nombre Ãºnico y ordenable:
+   // Nombre único y ordenable:
    // YYYYMMDD_HHMMSS_mmm__SEQ__TICKET__EVENT
    // En MQL4, extraer segundos manualmente desde datetime
-   datetime dayStart = nowGmt - (nowGmt % 86400);  // Inicio del dÃ­a
+   datetime dayStart = nowGmt - (nowGmt % 86400);  // Inicio del día
    int secondsFromMidnight = (int)(nowGmt - dayStart);
    int sec = secondsFromMidnight % 60;
    
@@ -189,7 +189,7 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
    string tmpRel   = relFolder + fnameBase + ".tmp";
    string finalRel = relFolder + fnameBase + ".txt";
 
-   // AÃ±adir EXPORT_TIME a la lÃ­nea antes de escribir
+   // Añadir EXPORT_TIME a la línea antes de escribir
    string finalLine = evtLine + "|EXPORT_TIME=" + IntegerToString(exportTimeMs);
 
    // Usar FILE_BIN igual que LectorOrdenes (no FILE_TXT)
@@ -199,19 +199,19 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
    int h = FileOpen(tmpRel, flags);
    if(h == INVALID_HANDLE)
    {
-      Print("ERROR: FileOpen tmp fallÃ³: ", tmpRel, " err=", GetLastError(),
-            ". AsegÃºrate de que existe la carpeta: Common\\Files\\", relFolder);
+      Print("ERROR: FileOpen tmp falló: ", tmpRel, " err=", GetLastError(),
+            ". Asegúrate de que existe la carpeta: Common\\Files\\", relFolder);
       return false;
    }
 
-   // Convertir lÃ­nea a UTF-8 igual que LectorOrdenes
+   // Convertir línea a UTF-8 igual que LectorOrdenes
    uchar utf8Bytes[];
    StringToUTF8Bytes(finalLine, utf8Bytes);
    
    // Escribir bytes UTF-8
    FileWriteArray(h, utf8Bytes);
    
-   // Escribir salto de lÃ­nea UTF-8 (\n = 0x0A) igual que LectorOrdenes (no \r\n)
+   // Escribir salto de línea UTF-8 (\n = 0x0A) igual que LectorOrdenes (no \r\n)
    uchar newline[] = {0x0A};
    FileWriteArray(h, newline);
    
@@ -229,10 +229,10 @@ bool WriteSpoolEvent(string evtLine, int ticket, string evtType)
    return ok;
 }
 
-// -------------------- ConstrucciÃ³n de lÃ­neas de evento --------------------
+// -------------------- Construcción de líneas de evento --------------------
 string BuildOpenLine(int ticket, string symbol, string typeStr, double lots, double sl, double tp, long eventTimeMs)
 {
-   // Si SL/TP son 0.0, usar string vacÃ­o (igual que LectorOrdenes)
+   // Si SL/TP son 0.0, usar string vacío (igual que LectorOrdenes)
    string sSL = (sl > 0.0 ? DoubleToString(sl, Digits) : "");
    string sTP = (tp > 0.0 ? DoubleToString(tp, Digits) : "");
    
@@ -432,8 +432,8 @@ int OnInit()
 
    Print("Extractor v1.02 (BUY/SELL) listo. FolderRel=", SpoolBaseRel(),
          " common=", (InpUseCommonFiles ? "true":"false"));
-   Print("CodificaciÃ³n UTF-8 igual que LectorOrdenes.mq4");
-   Print("AsegÃºrate de que existe la carpeta: Common\\Files\\", SpoolBaseRel());
+   Print("Codificación UTF-8 igual que LectorOrdenes.mq4");
+   Print("Asegúrate de que existe la carpeta: Common\\Files\\", SpoolBaseRel());
    Print("Timer: ", InpTimerSeconds, "s (para detectar OPEN aunque no haya ticks)");
 
    EventSetTimer(InpTimerSeconds);

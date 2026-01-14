@@ -14,12 +14,15 @@ input double InpFixedLots     = 0.10;  // (no se usa si InpFondeo=false, se mant
 input int    InpSlippage      = 30;     // pips
 input int    InpMagicNumber   = 0;      // (compatibilidad; en V2 el magic es ticketMaster)
 input int    InpTimerSeconds  = 1;
+input int    InpSyncSeconds   = 10;     // cada N segundos recalcula memoria desde MT4
 
 // -------------------- Paths (Common\\Files) --------------------
 string BASE_SUBDIR   = "V3\\Phoenix";
 string g_workerId    = "";
 string g_queueFile   = "";
 string g_historyFile = "";
+
+datetime g_lastSyncTime = 0;
 
 // -------------------- Notif anti-spam --------------------
 string g_notifCloseTickets[];
@@ -51,6 +54,13 @@ bool TicketInArray(const string ticket, string &arr[], int count)
 {
    for(int i=0; i<count; i++)
       if(arr[i] == ticket) return true;
+   return false;
+}
+
+bool LineInArray(const string line, string &arr[], int count)
+{
+   for(int i=0; i<count; i++)
+      if(arr[i] == line) return true;
    return false;
 }
 
@@ -690,6 +700,15 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   // Sync defensivo: evita "posiciones en memoria" fantasma (cierres manuales/SL/TP o eventos perdidos)
+   datetime now = TimeCurrent();
+   if(g_lastSyncTime == 0 || (InpSyncSeconds > 0 && (now - g_lastSyncTime) >= InpSyncSeconds))
+   {
+      LoadOpenPositionsFromMT4();
+      DisplayOpenLogsInChart();
+      g_lastSyncTime = now;
+   }
+
    // worker_read_time cuando se lee la cola (ms epoch)
    datetime tRead = TimeCurrent();
    long workerReadTimeMs = (long)(tRead * 1000) + (GetTickCount() % 1000);
@@ -730,6 +749,7 @@ void OnTimer()
 
       if(eventType == "OPEN")
       {
+         RefreshRates();
          // Validación: símbolo
          if(!SymbolSelect(symbol, true))
          {
@@ -807,9 +827,10 @@ void OnTimer()
          int ticketWorker = g_openLogs[idx].ticketWorker;
          if(!OrderSelect(ticketWorker, SELECT_BY_TICKET))
          {
+            string sym = g_openLogs[idx].symbol;
             RemoveOpenLog(ticketMaster);
             DisplayOpenLogsInChart();
-            AppendHistory("MODIFY fallido: Orden ya cerrada", "MODIFY", ticketMaster, ticketWorker, "", 0, g_openLogs[idx].symbol, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
+            AppendHistory("MODIFY fallido: Orden ya cerrada", "MODIFY", ticketMaster, ticketWorker, "", 0, sym, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
             RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             continue;
          }
@@ -836,9 +857,10 @@ void OnTimer()
             int historyTicket = FindOrderInHistory(ticketMaster);
             if(historyTicket >= 0)
             {
+               string sym = g_openLogs[idx].symbol;
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
-               AppendHistory("MODIFY fallido: Orden ya cerrada", "MODIFY", ticketMaster, ticketWorker, "", 0, g_openLogs[idx].symbol, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
+               AppendHistory("MODIFY fallido: Orden ya cerrada", "MODIFY", ticketMaster, ticketWorker, "", 0, sym, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, workerExecTimeMs);
                RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             }
             else
@@ -875,9 +897,10 @@ void OnTimer()
             int historyTicket = FindOrderInHistory(ticketMaster);
             if(historyTicket >= 0)
             {
+               string sym = g_openLogs[idx].symbol;
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
-               AppendHistory("Orden ya estaba cerrada", "CLOSE", ticketMaster, ticketWorker, "", 0, g_openLogs[idx].symbol, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
+               AppendHistory("Orden ya estaba cerrada", "CLOSE", ticketMaster, ticketWorker, "", 0, sym, 0, 0, 0, 0, 0, 0, 0, workerReadTimeMs, 0);
                RemoveTicket(IntegerToString(ticketMaster), g_notifCloseTickets, g_notifCloseCount);
             }
             else
@@ -887,6 +910,7 @@ void OnTimer()
             continue;
          }
 
+         RefreshRates();
          int type = OrderType();
          double volume = OrderLots();
          double closePrice = (type==OP_BUY ? Bid : Ask);
@@ -911,9 +935,10 @@ void OnTimer()
             int historyTicket = FindOrderInHistory(ticketMaster);
             if(historyTicket >= 0)
             {
+               string sym = g_openLogs[idx].symbol;
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
-               AppendHistory("CLOSE fallido: Orden ya cerrada", "CLOSE", ticketMaster, ticketWorker, "", 0, g_openLogs[idx].symbol, 0, 0, 0, 0, closePrice, closeTime, profitBefore, workerReadTimeMs, workerExecTimeMs);
+               AppendHistory("CLOSE fallido: Orden ya cerrada", "CLOSE", ticketMaster, ticketWorker, "", 0, sym, 0, 0, 0, 0, closePrice, closeTime, profitBefore, workerReadTimeMs, workerExecTimeMs);
                RemoveTicket(IntegerToString(ticketMaster), g_notifCloseTickets, g_notifCloseCount);
             }
             else
@@ -933,7 +958,41 @@ void OnTimer()
       }
    }
 
-   RewriteQueue(g_queueFile, remaining, remainingCount);
+   // REWRITE defensivo: evita perder eventos si Phoenix escribió mientras procesábamos (race condition)
+   string merged[];
+   int mergedCount = 0;
+
+   // 1) Mantener lo que quedó pendiente
+   for(int r=0; r<remainingCount; r++)
+   {
+      ArrayResize(merged, mergedCount+1);
+      merged[mergedCount] = remaining[r];
+      mergedCount++;
+   }
+
+   // 2) Releer el archivo actual y conservar líneas nuevas que no estaban en el snapshot inicial
+   string linesNow[];
+   int totalNow = ReadQueue(g_queueFile, linesNow);
+   if(totalNow > 0)
+   {
+      int startNow = 0;
+      string firstLowerNow = linesNow[0];
+      StringToLower(firstLowerNow);
+      if(StringFind(firstLowerNow, "event_type") >= 0) startNow = 1;
+
+      for(int n=startNow; n<totalNow; n++)
+      {
+         // Si esta línea NO existía cuando leímos al inicio, la preservamos (para no perderla)
+         if(!LineInArray(linesNow[n], lines, total) && !LineInArray(linesNow[n], merged, mergedCount))
+         {
+            ArrayResize(merged, mergedCount+1);
+            merged[mergedCount] = linesNow[n];
+            mergedCount++;
+         }
+      }
+   }
+
+   RewriteQueue(g_queueFile, merged, mergedCount);
 }
 
 

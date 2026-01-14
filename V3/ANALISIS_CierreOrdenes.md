@@ -523,3 +523,4 @@ Este diseño elimina la causa raíz del problema de pérdida de comandos CLOSE a
 
 La purga nocturna mantiene los archivos en tamaño manejable sin interferir con las operaciones durante el horario de trading.
 
+
