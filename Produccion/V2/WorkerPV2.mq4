@@ -18,6 +18,7 @@ input int    InpSlippage      = 30;     // pips
 input int    InpMagicNumber   = 0;      // (compatibilidad; en V2 el magic es ticketMaster)
 input int    InpTimerSeconds  = 1;
 input int    InpSyncSeconds   = 10;     // cada N segundos recalcula memoria desde MT4
+input int    InpThrottleMs    = 200;    // mínimo ms entre procesamientos de cola (OnTick reactivo)
 
 // -------------------- Paths (Common\\Files) --------------------
 string BASE_SUBDIR   = "PROD\\Phoenix\\V2";
@@ -27,6 +28,7 @@ string g_estadosFile = "";
 string g_historyFile = "";
 
 datetime g_lastSyncTime = 0;
+uint     g_lastRunMs    = 0;   // Para throttle de OnTick
 
 // -------------------- Estados procesados (en memoria) --------------------
 // Map: key = "ticketMaster_eventType" -> estado (0=pendiente, 1=en proceso, 2=completado)
@@ -836,6 +838,21 @@ void LoadOpenPositionsFromMT4()
    }
 }
 
+// -------------------- Throttle (para OnTick reactivo) --------------------
+bool Throttled()
+{
+   uint nowMs = GetTickCount();
+   if(InpThrottleMs <= 0)
+   {
+      g_lastRunMs = nowMs;
+      return false;
+   }
+   uint elapsed = nowMs - g_lastRunMs; // wrap-safe en unsigned
+   if(elapsed < (uint)InpThrottleMs) return true;
+   g_lastRunMs = nowMs;
+   return false;
+}
+
 // -------------------- Lifecycle --------------------
 int OnInit()
 {
@@ -866,7 +883,19 @@ void OnDeinit(const int reason)
    ObjectsDeleteAll(0, "WorkerPV2_Label_");
 }
 
+void OnTick()
+{
+   if(Throttled()) return;
+   ProcessQueue();
+}
+
 void OnTimer()
+{
+   if(Throttled()) return;
+   ProcessQueue();
+}
+
+void ProcessQueue()
 {
    // 1. Si existe .lck, es purga nocturna → salir
    string lockFile = g_queueFile + ".lck";
