@@ -1,38 +1,34 @@
 //+------------------------------------------------------------------+
 //|                                                   WorkerPV2.mq4  |
-//|  Implementación MQL4 según V3/ANALISIS_CierreOrdenes.md          |
+//|  Clon MQL4 del WorkerPV2.mq5                                     |
 //|  ARQUITECTURA APPEND-ONLY: Elimina race condition                |
 //|  - cola_WORKER_XXX.csv: Solo lectura (Distribuidor escribe)      |
 //|  - estados_WORKER_XXX.csv: Solo escritura append (Worker)        |
-//|  Lee cola_WORKER_<account>.csv (Common\\Files\\PROD\\Phoenix\\V2)|
+//|  Lee cola_WORKER_<account>.csv (Common\Files\PROD\Phoenix\V2)    |
 //|  Ejecuta OPEN / MODIFY / CLOSE, historiza y notifica             |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.00"
+#property version   "2.00"
 
 // -------------------- Inputs --------------------
-input bool   InpFondeo        = false;
+input bool   InpFondeo        = true;
 input double InpLotMultiplier = 1.0;
-input double InpFixedLots     = 0.10;  // (no se usa si InpFondeo=false, se mantiene por compatibilidad)
-input int    InpSlippage      = 30;     // pips
-input int    InpMagicNumber   = 0;      // (compatibilidad; en V2 el magic es ticketMaster)
+input double InpFixedLots     = 0.10;
+input int    InpSlippage      = 30;
+input int    InpMagicNumber   = 0;     // (compatibilidad; en V2 el magic es ticketMaster)
 input int    InpTimerSeconds  = 1;
-// InpSyncSeconds ELIMINADO: El sync periódico causaba inconsistencias en g_openLogs.
-// Ahora g_openLogs se mantiene sincronizado fielmente con AddOpenLog/RemoveOpenLog en cada evento.
-// Solo se carga desde MT4 en OnInit() al arrancar.
-input int    InpThrottleMs    = 200;    // mínimo ms entre procesamientos de cola (OnTick reactivo)
+input int    InpThrottleMs    = 200;
 
-// -------------------- Paths (Common\\Files) --------------------
+// -------------------- Paths (Common\Files) --------------------
 string BASE_SUBDIR   = "PROD\\Phoenix\\V2";
 string g_workerId    = "";
 string g_queueFile   = "";
 string g_estadosFile = "";
-string g_erroresFile = "";  // Archivo de errores para trazabilidad
+string g_erroresFile = "";
 
-uint     g_lastRunMs    = 0;   // Para throttle de OnTick
+uint   g_lastRunMs   = 0;
 
 // -------------------- Estados procesados (en memoria) --------------------
-// Map: key = "ticketMaster_eventType" -> estado (0=pendiente, 1=en proceso, 2=completado)
 string g_estadosKeys[];
 int    g_estadosValues[];
 int    g_estadosCount = 0;
@@ -43,34 +39,29 @@ int    g_notifCloseCount  = 0;
 string g_notifModifyTickets[];
 int    g_notifModifyCount = 0;
 
-// -------------------- Estructura única en memoria --------------------
-struct OpenLogInfo
-{
-   int ticketMaster;     // MagicNumber = identificador maestro
-   string ticketMasterSource; // "MAGIC" | "COMMENT" | "ORDER_TICKET"
-   int ticketWorker;     // Ticket MT4
-   int magicNumber;      // Para verificación/visualización
-   string symbol;
-   int orderType;        // OP_BUY / OP_SELL
-   double lots;
-   double openPrice;
-   datetime openTime;
-   double sl;
-   double tp;
-};
-
-OpenLogInfo g_openLogs[];
-int g_openLogsCount = 0;
+// -------------------- Estructura en memoria (arrays paralelos) --------------------
+int      g_logTicketMaster[];
+string   g_logTicketMasterSource[];
+int      g_logTicketWorker[];
+int      g_logMagicNumber[];
+string   g_logSymbol[];
+int      g_logOrderType[];
+double   g_logLots[];
+double   g_logOpenPrice[];
+datetime g_logOpenTime[];
+double   g_logSL[];
+double   g_logTP[];
+int      g_openLogsCount = 0;
 
 // -------------------- Helpers arrays --------------------
-bool TicketInArray(const string ticket, string &arr[], int count)
+bool TicketInArray(string ticket, string &arr[], int count)
 {
    for(int i=0; i<count; i++)
       if(arr[i] == ticket) return true;
    return false;
 }
 
-void AddTicket(const string ticket, string &arr[], int &count)
+void AddTicket(string ticket, string &arr[], int &count)
 {
    if(TicketInArray(ticket, arr, count)) return;
    ArrayResize(arr, count+1);
@@ -78,7 +69,7 @@ void AddTicket(const string ticket, string &arr[], int &count)
    count++;
 }
 
-void RemoveTicket(const string ticket, string &arr[], int &count)
+void RemoveTicket(string ticket, string &arr[], int &count)
 {
    for(int i=0; i<count; i++)
    {
@@ -94,75 +85,63 @@ void RemoveTicket(const string ticket, string &arr[], int &count)
 }
 
 // -------------------- Helpers strings --------------------
-string Trim(string s)
+string TrimStr(string s)
 {
    StringTrimLeft(s);
    StringTrimRight(s);
    return s;
 }
 
-string Upper(string s)
+string UpperStr(string s)
 {
    StringToUpper(s);
    return s;
 }
 
-// MQL4 no tiene LongToString() en algunas builds; usar StringFormat para int64
-string LongToStr(const long v)
-{
-   return StringFormat("%I64d", v);
-}
-
 // -------------------- Errors / notifications --------------------
-string ErrorText(const int code)
+string ErrorText(int code)
 {
    switch(code)
    {
-      case 0:   return("No error");
-      case 1:   return("No error returned");
-      case 2:   return("Common error");
-      case 3:   return("Invalid trade parameters");
-      case 4:   return("Trade server busy");
-      case 5:   return("Old terminal version");
-      case 6:   return("No connection with trade server");
-      case 8:   return("Too frequent requests");
-      case 64:  return("Account disabled");
-      case 65:  return("Invalid account");
-      case 128: return("Trade timeout");
-      case 129: return("Invalid price");
-      case 130: return("Invalid stop");
-      case 131: return("Invalid trade volume");
-      case 132: return("Market closed");
-      case 133: return("Trade disabled");
-      case 134: return("Not enough money");
-      case 135: return("Price changed");
-      case 136: return("Off quotes");
-      case 146: return("Trade subsystem busy");
-      case 148: return("Auto trading disabled");
-      default:  return("Error code " + IntegerToString(code));
+      case 0:   return "No error";
+      case 1:   return "No error returned";
+      case 2:   return "Common error";
+      case 3:   return "Invalid trade parameters";
+      case 4:   return "Trade server busy";
+      case 5:   return "Old terminal version";
+      case 6:   return "No connection with trade server";
+      case 8:   return "Too frequent requests";
+      case 64:  return "Account disabled";
+      case 65:  return "Invalid account";
+      case 128: return "Trade timeout";
+      case 129: return "Invalid price";
+      case 130: return "Invalid stop";
+      case 131: return "Invalid trade volume";
+      case 132: return "Market closed";
+      case 133: return "Trade disabled";
+      case 134: return "Not enough money";
+      case 135: return "Price changed";
+      case 136: return "Off quotes";
+      case 146: return "Trade subsystem busy";
+      case 148: return "Auto trading disabled";
+      default:  return "Error code " + IntegerToString(code);
    }
 }
 
-string FormatLastError(const string prefix)
-{
-   int code = GetLastError();
-   return prefix + " (" + IntegerToString(code) + ") " + ErrorText(code);
-}
-
-void Notify(const string msg)
+void Notify(string msg)
 {
    string full = "W: " + IntegerToString(AccountNumber()) + " - " + msg;
    SendNotification(full);
 }
 
-// -------------------- UTF-8 helpers (binario) --------------------
+// -------------------- UTF-8 helpers --------------------
 void StringToUTF8Bytes(string str, uchar &bytes[])
 {
    ArrayResize(bytes, 0);
    int len = StringLen(str);
    for(int i=0; i<len; i++)
    {
-      ushort ch = StringGetCharacter(str, i);
+      ushort ch = (ushort)StringGetCharacter(str, i);
       if(ch < 0x80)
       {
          int size = ArraySize(bytes);
@@ -202,7 +181,7 @@ string UTF8BytesToString(uchar &bytes[], int startPos = 0, int length = -1)
 
       if(b < 0x80)
       {
-         result += ShortToString((ushort)b);
+         result += CharToString((uchar)b);
          pos++;
       }
       else if((b & 0xE0) == 0xC0 && pos + 1 < endPos)
@@ -211,63 +190,42 @@ string UTF8BytesToString(uchar &bytes[], int startPos = 0, int length = -1)
          if((b2 & 0xC0) == 0x80)
          {
             ushort code = ((ushort)(b & 0x1F) << 6) | (b2 & 0x3F);
-            result += ShortToString(code);
+            result += CharToString((uchar)code);
             pos += 2;
          }
          else
          {
-            result += ShortToString((ushort)b);
+            result += CharToString((uchar)b);
             pos++;
          }
       }
       else if((b & 0xF0) == 0xE0 && pos + 2 < endPos)
       {
-         uchar b2 = bytes[pos+1];
-         uchar b3 = bytes[pos+2];
-         if((b2 & 0xC0) == 0x80 && (b3 & 0xC0) == 0x80)
-         {
-            ushort code = ((ushort)(b & 0x0F) << 12) | ((ushort)(b2 & 0x3F) << 6) | (b3 & 0x3F);
-            result += ShortToString(code);
-            pos += 3;
-         }
-         else
-         {
-            result += ShortToString((ushort)b);
-            pos++;
-         }
+         pos += 3;
       }
       else
       {
-         result += ShortToString((ushort)0xFFFD);
          pos++;
       }
    }
-
    return result;
 }
 
-string CommonRelative(const string filename)
+string CommonRelative(string filename)
 {
    return BASE_SUBDIR + "\\" + filename;
 }
 
-bool EnsureBaseFolder()
-{
-   // Las carpetas se crean externamente; no intentamos crearlas desde MQL4.
-   return true;
-}
-
 // -------------------- Lot sizing --------------------
-double LotFromCapital(double capital, string symbol)
+double LotFromCapital(double capital, string sym)
 {
    int blocks = (int)MathFloor(capital / 1000.0);
    if(blocks < 1) blocks = 1;
 
    double lot = blocks * 0.01;
-
-   double minLot  = MarketInfo(symbol, MODE_MINLOT);
-   double maxLot  = MarketInfo(symbol, MODE_MAXLOT);
-   double stepLot = MarketInfo(symbol, MODE_LOTSTEP);
+   double minLot  = MarketInfo(sym, MODE_MINLOT);
+   double maxLot  = MarketInfo(sym, MODE_MAXLOT);
+   double stepLot = MarketInfo(sym, MODE_LOTSTEP);
 
    if(minLot  <= 0.0) minLot  = 0.01;
    if(maxLot  <= 0.0) maxLot  = 100.0;
@@ -280,88 +238,121 @@ double LotFromCapital(double capital, string symbol)
    lot = minLot + steps * stepLot;
    lot = NormalizeDouble(lot, 2);
 
-   if(lot < minLot) lot = minLot;
-   if(lot > maxLot) lot = maxLot;
-
    return lot;
 }
 
-double ComputeWorkerLots(string symbol, double masterLots)
+double ComputeWorkerLots(string sym, double masterLots)
 {
    if(InpFondeo)
       return masterLots * InpLotMultiplier;
-   return LotFromCapital(AccountBalance(), symbol);
+   return LotFromCapital(AccountBalance(), sym);
 }
 
-// -------------------- Memory ops --------------------
-int FindOpenLog(const int ticketMaster)
+// -------------------- Memory ops (arrays paralelos) --------------------
+int FindOpenLog(int ticketMaster)
 {
    for(int i=0; i<g_openLogsCount; i++)
-      if(g_openLogs[i].ticketMaster == ticketMaster)
+      if(g_logTicketMaster[i] == ticketMaster)
          return i;
    return -1;
 }
 
-void RemoveOpenLog(const int ticketMaster)
+void RemoveOpenLog(int ticketMaster)
 {
    int idx = FindOpenLog(ticketMaster);
    if(idx < 0) return;
+   
    for(int j=idx; j<g_openLogsCount-1; j++)
-      g_openLogs[j] = g_openLogs[j+1];
+   {
+      g_logTicketMaster[j]       = g_logTicketMaster[j+1];
+      g_logTicketMasterSource[j] = g_logTicketMasterSource[j+1];
+      g_logTicketWorker[j]       = g_logTicketWorker[j+1];
+      g_logMagicNumber[j]        = g_logMagicNumber[j+1];
+      g_logSymbol[j]             = g_logSymbol[j+1];
+      g_logOrderType[j]          = g_logOrderType[j+1];
+      g_logLots[j]               = g_logLots[j+1];
+      g_logOpenPrice[j]          = g_logOpenPrice[j+1];
+      g_logOpenTime[j]           = g_logOpenTime[j+1];
+      g_logSL[j]                 = g_logSL[j+1];
+      g_logTP[j]                 = g_logTP[j+1];
+   }
    g_openLogsCount--;
-   ArrayResize(g_openLogs, g_openLogsCount);
+   
+   ArrayResize(g_logTicketMaster, g_openLogsCount);
+   ArrayResize(g_logTicketMasterSource, g_openLogsCount);
+   ArrayResize(g_logTicketWorker, g_openLogsCount);
+   ArrayResize(g_logMagicNumber, g_openLogsCount);
+   ArrayResize(g_logSymbol, g_openLogsCount);
+   ArrayResize(g_logOrderType, g_openLogsCount);
+   ArrayResize(g_logLots, g_openLogsCount);
+   ArrayResize(g_logOpenPrice, g_openLogsCount);
+   ArrayResize(g_logOpenTime, g_openLogsCount);
+   ArrayResize(g_logSL, g_openLogsCount);
+   ArrayResize(g_logTP, g_openLogsCount);
 }
 
-void AddOpenLog(OpenLogInfo &log)
+void AddOpenLog(int ticketMaster, string source, int ticketWorker, int magic, string sym, int orderType, double lots, double price, datetime openTime, double sl, double tp)
 {
-   ArrayResize(g_openLogs, g_openLogsCount + 1);
-   g_openLogs[g_openLogsCount] = log;
+   int idx = g_openLogsCount;
    g_openLogsCount++;
+   
+   ArrayResize(g_logTicketMaster, g_openLogsCount);
+   ArrayResize(g_logTicketMasterSource, g_openLogsCount);
+   ArrayResize(g_logTicketWorker, g_openLogsCount);
+   ArrayResize(g_logMagicNumber, g_openLogsCount);
+   ArrayResize(g_logSymbol, g_openLogsCount);
+   ArrayResize(g_logOrderType, g_openLogsCount);
+   ArrayResize(g_logLots, g_openLogsCount);
+   ArrayResize(g_logOpenPrice, g_openLogsCount);
+   ArrayResize(g_logOpenTime, g_openLogsCount);
+   ArrayResize(g_logSL, g_openLogsCount);
+   ArrayResize(g_logTP, g_openLogsCount);
+   
+   g_logTicketMaster[idx]       = ticketMaster;
+   g_logTicketMasterSource[idx] = source;
+   g_logTicketWorker[idx]       = ticketWorker;
+   g_logMagicNumber[idx]        = magic;
+   g_logSymbol[idx]             = sym;
+   g_logOrderType[idx]          = orderType;
+   g_logLots[idx]               = lots;
+   g_logOpenPrice[idx]          = price;
+   g_logOpenTime[idx]           = openTime;
+   g_logSL[idx]                 = sl;
+   g_logTP[idx]                 = tp;
 }
 
-void UpdateOpenLogSLTP(const int ticketMaster, double sl, double tp)
+void UpdateOpenLogSLTP(int ticketMaster, double slVal, double tpVal)
 {
    int idx = FindOpenLog(ticketMaster);
    if(idx < 0) return;
-   g_openLogs[idx].sl = sl;
-   g_openLogs[idx].tp = tp;
+   g_logSL[idx] = slVal;
+   g_logTP[idx] = tpVal;
 }
 
-// -------------------- Find open order / history by ticketMaster --------------------
-int FindOpenOrder(const int ticketMaster)
+// -------------------- Find in history (MQL4) --------------------
+int FindOrderInHistory(int ticketMaster)
 {
-   for(int i=OrdersTotal()-1; i>=0; i--)
-   {
-      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderMagicNumber() == ticketMaster) return OrderTicket();
-      if(OrderComment() == IntegerToString(ticketMaster)) return OrderTicket();
-   }
-   return -1;
-}
-
-int FindOrderInHistory(const int ticketMaster)
-{
-   for(int i=HistoryTotal()-1; i>=0; i--)
+   string tm = IntegerToString(ticketMaster);
+   int total = OrdersHistoryTotal();
+   for(int i=total-1; i>=0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY)) continue;
-      if(OrderMagicNumber() == ticketMaster) return OrderTicket();
-      if(OrderComment() == IntegerToString(ticketMaster)) return OrderTicket();
+      if(OrderMagicNumber() == ticketMaster || OrderComment() == tm)
+         return OrderTicket();
    }
-   return -1;
+   return 0;
 }
 
 // -------------------- Estados procesados --------------------
-// Busca estado por key (ticketMaster_eventType)
-int FindEstado(const string key)
+int FindEstado(string key)
 {
    for(int i=0; i<g_estadosCount; i++)
       if(g_estadosKeys[i] == key)
          return g_estadosValues[i];
-   return -1; // No encontrado
+   return -1;
 }
 
-// Actualiza o añade estado en memoria
-void SetEstado(const string key, int estado)
+void SetEstado(string key, int estado)
 {
    for(int i=0; i<g_estadosCount; i++)
    {
@@ -371,7 +362,6 @@ void SetEstado(const string key, int estado)
          return;
       }
    }
-   // No existe, añadir
    ArrayResize(g_estadosKeys, g_estadosCount+1);
    ArrayResize(g_estadosValues, g_estadosCount+1);
    g_estadosKeys[g_estadosCount] = key;
@@ -379,8 +369,6 @@ void SetEstado(const string key, int estado)
    g_estadosCount++;
 }
 
-// Escribe estado a archivo (append-only)
-// NOTA: timestamp en milisegundos epoch UTC para trazabilidad precisa
 void AppendEstado(int ticketMaster, string eventType, int estado, string resultado, string extra)
 {
    string key = IntegerToString(ticketMaster) + "_" + eventType;
@@ -389,7 +377,6 @@ void AppendEstado(int ticketMaster, string eventType, int estado, string resulta
    int h = FileOpen(g_estadosFile, FILE_BIN|FILE_READ|FILE_WRITE|FILE_COMMON|FILE_SHARE_WRITE);
    if(h == INVALID_HANDLE)
    {
-      // Crear archivo si no existe
       h = FileOpen(g_estadosFile, FILE_BIN|FILE_WRITE|FILE_COMMON);
    }
    else
@@ -403,10 +390,8 @@ void AppendEstado(int ticketMaster, string eventType, int estado, string resulta
       return;
    }
    
-   // Timestamp en milisegundos epoch UTC (compatible con Distribuidor Python)
-   // TimeGMT() retorna segundos UTC, multiplicamos por 1000 para milisegundos
    long timestampMs = (long)TimeGMT() * 1000;
-   string timestamp = LongToStr(timestampMs);
+   string timestamp = IntegerToString(timestampMs);
    
    string line = IntegerToString(ticketMaster) + ";" +
                  eventType + ";" +
@@ -418,19 +403,16 @@ void AppendEstado(int ticketMaster, string eventType, int estado, string resulta
    uchar utf8[];
    StringToUTF8Bytes(line, utf8);
    FileWriteArray(h, utf8);
-   uchar nl[] = {0x0A};
+   uchar nl[] = {0x0D, 0x0A};
    FileWriteArray(h, nl);
    FileClose(h);
 }
 
-// Escribe error a archivo de errores (append-only) para trazabilidad completa
-// Formato: timestamp;ticket_master;magic_number;event_type;error_code;mt4_error;ticketWorker;symbol;detalle
 void AppendError(int ticketMaster, int magicNumber, string eventType, string errorCode, int mt4Error, int ticketWorker, string symbol, string detalle)
 {
    int h = FileOpen(g_erroresFile, FILE_BIN|FILE_READ|FILE_WRITE|FILE_COMMON|FILE_SHARE_WRITE);
    if(h == INVALID_HANDLE)
    {
-      // Crear archivo si no existe
       h = FileOpen(g_erroresFile, FILE_BIN|FILE_WRITE|FILE_COMMON);
    }
    else
@@ -444,7 +426,6 @@ void AppendError(int ticketMaster, int magicNumber, string eventType, string err
       return;
    }
    
-   // Timestamp legible (formato: YYYY.MM.DD HH:MM:SS)
    string timestamp = TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS);
    
    string line = timestamp + ";" +
@@ -460,25 +441,22 @@ void AppendError(int ticketMaster, int magicNumber, string eventType, string err
    uchar utf8[];
    StringToUTF8Bytes(line, utf8);
    FileWriteArray(h, utf8);
-   uchar nl[] = {0x0A};
+   uchar nl[] = {0x0D, 0x0A};
    FileWriteArray(h, nl);
    FileClose(h);
    
-   // También imprimir en log de MT4 para visibilidad inmediata
    Print("[ERROR] ", eventType, " ticketMaster=", ticketMaster, " magic=", magicNumber, 
          " err=", errorCode, " mt4=", mt4Error, " tw=", ticketWorker, " sym=", symbol, " | ", detalle);
 }
 
-// Carga estados desde archivo a memoria
 void CargarEstadosProcesados()
 {
-   // Limpiar memoria
    ArrayResize(g_estadosKeys, 0);
    ArrayResize(g_estadosValues, 0);
    g_estadosCount = 0;
    
    int handle = FileOpen(g_estadosFile, FILE_BIN|FILE_READ|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
-   if(handle == INVALID_HANDLE) return; // No existe aún
+   if(handle == INVALID_HANDLE) return;
    
    int fileSize = (int)FileSize(handle);
    if(fileSize <= 0)
@@ -493,7 +471,6 @@ void CargarEstadosProcesados()
    FileClose(handle);
    if((int)bytesRead != fileSize) return;
    
-   // Saltar BOM UTF-8 si existe
    int bomSkip = 0;
    if(fileSize >= 3 && bytes[0]==0xEF && bytes[1]==0xBB && bytes[2]==0xBF)
       bomSkip = 3;
@@ -517,19 +494,18 @@ void CargarEstadosProcesados()
          ArrayCopy(lineBytes, bytes, 0, lineStart, lineEnd - lineStart);
          string ln = UTF8BytesToString(lineBytes);
          
-         // Parsear línea: ticketMaster;eventType;estado;timestamp;resultado;extra
          if(StringLen(ln) > 0)
          {
             string parts[];
             int n = StringSplit(ln, ';', parts);
             if(n >= 3)
             {
-               string ticketStr = Trim(parts[0]);
-               string evtType = Trim(parts[1]);
-               int estado = (int)StrToInteger(Trim(parts[2]));
+               string ticketStr = TrimStr(parts[0]);
+               string evtType = TrimStr(parts[1]);
+               int estado = (int)StringToInteger(TrimStr(parts[2]));
                
                string key = ticketStr + "_" + evtType;
-               SetEstado(key, estado); // Último estado prevalece
+               SetEstado(key, estado);
             }
          }
       }
@@ -544,10 +520,8 @@ void CargarEstadosProcesados()
    }
 }
 
-// Reconstruye arrays de reintentos desde estados (estado=1)
 void ReconstruirReintentosDesdeEstados()
 {
-   // Limpiar arrays de reintentos
    ArrayResize(g_notifCloseTickets, 0);
    g_notifCloseCount = 0;
    ArrayResize(g_notifModifyTickets, 0);
@@ -555,10 +529,9 @@ void ReconstruirReintentosDesdeEstados()
    
    for(int i=0; i<g_estadosCount; i++)
    {
-      if(g_estadosValues[i] == 1) // En proceso = necesita reintento
+      if(g_estadosValues[i] == 1)
       {
          string key = g_estadosKeys[i];
-         // Extraer ticketMaster y eventType del key "ticketMaster_eventType"
          int sep = StringFind(key, "_");
          if(sep > 0)
          {
@@ -579,8 +552,8 @@ void ReconstruirReintentosDesdeEstados()
    }
 }
 
-// -------------------- Queue I/O (solo lectura) --------------------
-int ReadQueue(const string relPath, string &lines[])
+// -------------------- Queue I/O --------------------
+int ReadQueue(string relPath, string &lines[])
 {
    int handle = FileOpen(relPath, FILE_BIN|FILE_READ|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE) return 0;
@@ -598,7 +571,6 @@ int ReadQueue(const string relPath, string &lines[])
    FileClose(handle);
    if((int)bytesRead != fileSize) return 0;
 
-   // Saltar BOM UTF-8 si existe
    int bomSkip = 0;
    if(fileSize >= 3 && bytes[0]==0xEF && bytes[1]==0xBB && bytes[2]==0xBF)
       bomSkip = 3;
@@ -644,113 +616,101 @@ int ReadQueue(const string relPath, string &lines[])
 // -------------------- Chart display --------------------
 void DisplayOpenLogsInChart()
 {
-   // Limpieza previa
-   ObjectsDeleteAll(0, "WorkerPV2_Label_");
+   string prefix = "WorkerPV2_Label_";
+   for(int i=ObjectsTotal()-1; i>=0; i--)
+   {
+      string name = ObjectName(i);
+      if(StringFind(name, prefix) == 0)
+         ObjectDelete(name);
+   }
 
    int y = 20;
    int lineH = 14;
 
-   string title = "WorkerPV2 - POSICIONES EN MEMORIA";
-   string titleName = "WorkerPV2_Label_Title";
-   ObjectCreate(0, titleName, OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, titleName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, titleName, OBJPROP_XDISTANCE, 10);
-   ObjectSetInteger(0, titleName, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, titleName, OBJPROP_COLOR, clrRed);
-   ObjectSetInteger(0, titleName, OBJPROP_FONTSIZE, 10);
-   ObjectSetString(0, titleName, OBJPROP_TEXT, title);
+   string title = "WorkerPV2 (MQL4) - POSICIONES EN MEMORIA";
+   string titleName = prefix + "Title";
+   ObjectCreate(titleName, OBJ_LABEL, 0, 0, 0);
+   ObjectSet(titleName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSet(titleName, OBJPROP_XDISTANCE, 10);
+   ObjectSet(titleName, OBJPROP_YDISTANCE, y);
+   ObjectSetText(titleName, title, 10, "Arial", clrRed);
    y += lineH;
 
    for(int i=0; i<g_openLogsCount; i++)
    {
-      string labelName = "WorkerPV2_Label_" + IntegerToString(i);
-      string text = "TM: " + IntegerToString(g_openLogs[i].ticketMaster) +
-                    " (source=" + g_openLogs[i].ticketMasterSource + ")" +
-                    " || TW: " + IntegerToString(g_openLogs[i].ticketWorker) +
-                    " || MN: " + IntegerToString(g_openLogs[i].magicNumber) +
-                    " || SYMBOL: " + g_openLogs[i].symbol;
-      ObjectCreate(0, labelName, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, labelName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, labelName, OBJPROP_XDISTANCE, 10);
-      ObjectSetInteger(0, labelName, OBJPROP_YDISTANCE, y);
-      ObjectSetInteger(0, labelName, OBJPROP_COLOR, clrRed);
-      ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 8);
-      ObjectSetString(0, labelName, OBJPROP_TEXT, text);
+      string labelName = prefix + IntegerToString(i);
+      string text = "TM: " + IntegerToString(g_logTicketMaster[i]) +
+                    " (source=" + g_logTicketMasterSource[i] + ")" +
+                    " || TW: " + IntegerToString(g_logTicketWorker[i]) +
+                    " || MN: " + IntegerToString(g_logMagicNumber[i]) +
+                    " || SYMBOL: " + g_logSymbol[i];
+      ObjectCreate(labelName, OBJ_LABEL, 0, 0, 0);
+      ObjectSet(labelName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSet(labelName, OBJPROP_XDISTANCE, 10);
+      ObjectSet(labelName, OBJPROP_YDISTANCE, y);
+      ObjectSetText(labelName, text, 8, "Arial", clrRed);
       y += lineH;
    }
 
-   string summaryName = "WorkerPV2_Label_Summary";
+   string summaryName = prefix + "Summary";
    string summaryText = "Total: " + IntegerToString(g_openLogsCount) + " posiciones";
-   ObjectCreate(0, summaryName, OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, summaryName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, summaryName, OBJPROP_XDISTANCE, 10);
-   ObjectSetInteger(0, summaryName, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, summaryName, OBJPROP_COLOR, clrRed);
-   ObjectSetInteger(0, summaryName, OBJPROP_FONTSIZE, 9);
-   ObjectSetString(0, summaryName, OBJPROP_TEXT, summaryText);
+   ObjectCreate(summaryName, OBJ_LABEL, 0, 0, 0);
+   ObjectSet(summaryName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSet(summaryName, OBJPROP_XDISTANCE, 10);
+   ObjectSet(summaryName, OBJPROP_YDISTANCE, y);
+   ObjectSetText(summaryName, summaryText, 9, "Arial", clrRed);
 }
 
 // -------------------- Parse --------------------
-// Acepta:
-// - OPEN;ticket;BUY/SELL;lots;symbol;sl;tp
-// - MODIFY;ticket;sl;tp   (o MODIFY;ticket;;;;;sl;tp)
-// - CLOSE;ticket
-bool ParseLine(const string line,
-               string &eventType,
-               int &ticketMaster,
-               string &orderTypeStr,
-               double &lots,
-               string &symbol,
-               double &sl,
-               double &tp)
+bool ParseLine(string line, string &eventType, int &ticketMaster, string &orderTypeStr, double &lots, string &sym, double &slVal, double &tpVal)
 {
    string parts[];
    int n = StringSplit(line, ';', parts);
    if(n < 2) return false;
 
-   eventType = Upper(Trim(parts[0]));
-   ticketMaster = (int)StrToInteger(Trim(parts[1]));
+   eventType = UpperStr(TrimStr(parts[0]));
+   ticketMaster = (int)StringToInteger(TrimStr(parts[1]));
    orderTypeStr = "";
    lots = 0.0;
-   symbol = "";
-   sl = 0.0;
-   tp = 0.0;
+   sym = "";
+   slVal = 0.0;
+   tpVal = 0.0;
 
    if(eventType == "" || ticketMaster <= 0) return false;
 
    if(eventType == "OPEN")
    {
       if(n < 5) return false;
-      orderTypeStr = Upper(Trim(parts[2]));
-      string lotsStr = Trim(parts[3]); StringReplace(lotsStr, ",", ".");
-      lots = StrToDouble(lotsStr);
-      symbol = Upper(Trim(parts[4]));
+      orderTypeStr = UpperStr(TrimStr(parts[2]));
+      string lotsStr = TrimStr(parts[3]);
+      StringReplace(lotsStr, ",", ".");
+      lots = StringToDouble(lotsStr);
+      sym = UpperStr(TrimStr(parts[4]));
       if(n > 5)
       {
-         string s = Trim(parts[5]); StringReplace(s, ",", ".");
-         if(s != "") sl = StrToDouble(s);
+         string s5 = TrimStr(parts[5]);
+         StringReplace(s5, ",", ".");
+         if(s5 != "") slVal = StringToDouble(s5);
       }
       if(n > 6)
       {
-         string s = Trim(parts[6]); StringReplace(s, ",", ".");
-         if(s != "") tp = StrToDouble(s);
+         string s6 = TrimStr(parts[6]);
+         StringReplace(s6, ",", ".");
+         if(s6 != "") tpVal = StringToDouble(s6);
       }
-      if(symbol == "" || (orderTypeStr != "BUY" && orderTypeStr != "SELL")) return false;
+      if(sym == "" || (orderTypeStr != "BUY" && orderTypeStr != "SELL")) return false;
       return true;
    }
    if(eventType == "MODIFY")
    {
-      // Contrato ÚNICO: MODIFY;ticket;sl;tp
       if(n < 4) return false;
-
-      string s = Trim(parts[2]); StringReplace(s, ",", ".");
-      string t = Trim(parts[3]); StringReplace(t, ",", ".");
-
-      // No permitir ambos vacíos (evento inválido)
-      if(s == "" && t == "") return false;
-
-      if(s != "") sl = StrToDouble(s);
-      if(t != "") tp = StrToDouble(t);
+      string s2 = TrimStr(parts[2]);
+      string s3 = TrimStr(parts[3]);
+      StringReplace(s2, ",", ".");
+      StringReplace(s3, ",", ".");
+      if(s2 == "" && s3 == "") return false;
+      if(s2 != "") slVal = StringToDouble(s2);
+      if(s3 != "") tpVal = StringToDouble(s3);
       return true;
    }
    if(eventType == "CLOSE")
@@ -761,65 +721,62 @@ bool ParseLine(const string line,
    return false;
 }
 
-// -------------------- Load open positions --------------------
-void LoadOpenPositionsFromMT4()
+// -------------------- Load open orders from MT4 --------------------
+void LoadOpenOrdersFromMT4()
 {
-   ArrayResize(g_openLogs, 0);
    g_openLogsCount = 0;
+   ArrayResize(g_logTicketMaster, 0);
+   ArrayResize(g_logTicketMasterSource, 0);
+   ArrayResize(g_logTicketWorker, 0);
+   ArrayResize(g_logMagicNumber, 0);
+   ArrayResize(g_logSymbol, 0);
+   ArrayResize(g_logOrderType, 0);
+   ArrayResize(g_logLots, 0);
+   ArrayResize(g_logOpenPrice, 0);
+   ArrayResize(g_logOpenTime, 0);
+   ArrayResize(g_logSL, 0);
+   ArrayResize(g_logTP, 0);
 
    int total = OrdersTotal();
    for(int i=0; i<total; i++)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      int magic = OrderMagicNumber();
       
-      // En producción pueden existir órdenes antiguas/manuales con magic=0.
-      // Para que la memoria refleje la realidad, las cargamos igualmente usando un ticketMaster "sustituto".
-      // Prioridad:
-      // - magicNumber si > 0
-      // - si el comment es numérico (ticketMaster), usarlo
-      // - si no, usar OrderTicket() como identificador interno (solo para visualización/sync)
-      int ticketMaster = 0;
+      // Solo órdenes de mercado (BUY/SELL)
+      int orderType = OrderType();
+      if(orderType != OP_BUY && orderType != OP_SELL) continue;
+
+      int magic = OrderMagicNumber();
+      string cmt = TrimStr(OrderComment());
+
+      int tm = 0;
       string source = "";
       if(magic > 0)
       {
-         ticketMaster = magic;
+         tm = magic;
          source = "MAGIC";
       }
       else
       {
-         string cmt = Trim(OrderComment());
-         int cmtId = (int)StrToInteger(cmt);
+         int cmtId = (int)StringToInteger(cmt);
          if(cmtId > 0)
          {
-            ticketMaster = cmtId;
+            tm = cmtId;
             source = "COMMENT";
          }
          else
          {
-            ticketMaster = OrderTicket();
+            tm = OrderTicket();
             source = "ORDER_TICKET";
          }
       }
 
-      OpenLogInfo log;
-      log.ticketMaster = ticketMaster;
-      log.ticketMasterSource = source;
-      log.ticketWorker = OrderTicket();
-      log.magicNumber  = magic;
-      log.symbol       = OrderSymbol();
-      log.orderType    = OrderType();
-      log.lots         = OrderLots();
-      log.openPrice    = OrderOpenPrice();
-      log.openTime     = OrderOpenTime();
-      log.sl           = OrderStopLoss();
-      log.tp           = OrderTakeProfit();
-
-      AddOpenLog(log);
+      AddOpenLog(tm, source, OrderTicket(), magic, OrderSymbol(), orderType, 
+                 OrderLots(), OrderOpenPrice(), OrderOpenTime(), OrderStopLoss(), OrderTakeProfit());
    }
 }
 
-// -------------------- Throttle (para OnTick reactivo) --------------------
+// -------------------- Throttle --------------------
 bool Throttled()
 {
    uint nowMs = GetTickCount();
@@ -828,7 +785,7 @@ bool Throttled()
       g_lastRunMs = nowMs;
       return false;
    }
-   uint elapsed = nowMs - g_lastRunMs; // wrap-safe en unsigned
+   uint elapsed = nowMs - g_lastRunMs;
    if(elapsed < (uint)InpThrottleMs) return true;
    g_lastRunMs = nowMs;
    return false;
@@ -842,26 +799,27 @@ int OnInit()
    g_estadosFile = CommonRelative("estados_WORKER_" + g_workerId + ".csv");
    g_erroresFile = CommonRelative("errores_WORKER_" + g_workerId + ".csv");
 
-   if(!EnsureBaseFolder()) return INIT_FAILED;
-
-   // 1. Cargar posiciones abiertas de MT4
-   LoadOpenPositionsFromMT4();
-   
-   // 2. Cargar estados procesados y reconstruir reintentos
+   LoadOpenOrdersFromMT4();
    CargarEstadosProcesados();
    ReconstruirReintentosDesdeEstados();
    
    DisplayOpenLogsInChart();
 
    EventSetTimer(InpTimerSeconds);
-   Print("WorkerPV2 inicializado. Cola=", g_queueFile, " Estados=", g_estadosFile, " Posiciones=", g_openLogsCount);
+   Print("WorkerPV2 (MQL4) inicializado. Cola=", g_queueFile, " Estados=", g_estadosFile, " Posiciones=", g_openLogsCount);
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   ObjectsDeleteAll(0, "WorkerPV2_Label_");
+   string prefix = "WorkerPV2_Label_";
+   for(int i=ObjectsTotal()-1; i>=0; i--)
+   {
+      string name = ObjectName(i);
+      if(StringFind(name, prefix) == 0)
+         ObjectDelete(name);
+   }
 }
 
 void OnTick()
@@ -886,10 +844,6 @@ void ProcessQueue()
       return;
    }
 
-   // NOTA: El sync periódico fue ELIMINADO. g_openLogs se mantiene sincronizado
-   // fielmente mediante AddOpenLog/RemoveOpenLog en cada OPEN/CLOSE procesado.
-   // Solo se carga desde MT4 en OnInit() al arrancar.
-
    // 2. Cargar estados procesados en memoria
    CargarEstadosProcesados();
 
@@ -897,7 +851,6 @@ void ProcessQueue()
    int total = ReadQueue(g_queueFile, lines);
    if(total <= 0) return;
 
-   // Cabecera opcional
    int startIdx = 0;
    if(total > 0)
    {
@@ -912,149 +865,126 @@ void ProcessQueue()
       int ticketMaster;
       string orderTypeStr;
       double lots;
-      string symbol;
-      double sl;
-      double tp;
+      string sym;
+      double slVal;
+      double tpVal;
 
-      if(!ParseLine(lines[i], eventType, ticketMaster, orderTypeStr, lots, symbol, sl, tp))
+      if(!ParseLine(lines[i], eventType, ticketMaster, orderTypeStr, lots, sym, slVal, tpVal))
          continue;
 
-      // Construir key para buscar estado
       string key = IntegerToString(ticketMaster) + "_" + eventType;
       int estadoActual = FindEstado(key);
 
-      // Si ya completado (estado=2), saltar
       if(estadoActual == 2)
          continue;
 
       if(eventType == "OPEN")
       {
-         RefreshRates();
-         // Validación: símbolo
-         if(!SymbolSelect(symbol, true))
+         // Verificar si ya existe
+         int idx = FindOpenLog(ticketMaster);
+         if(idx >= 0)
          {
-            int errCode = GetLastError();
-            string msg = "SymbolSelect failed: " + ErrorText(errCode);
-            Notify("Ticket: " + IntegerToString(ticketMaster) + " - OPEN FALLO: " + msg);
-            AppendEstado(ticketMaster, "OPEN", 2, "ERR_SYMBOL", msg);
-            AppendError(ticketMaster, ticketMaster, "OPEN", "ERR_SYMBOL", errCode, 0, symbol, msg);
+            AppendEstado(ticketMaster, "OPEN", 2, "OK_YA_EXISTE", IntegerToString(g_logTicketWorker[idx]));
             continue;
          }
 
-         // Deduplicación
-         int existing = FindOpenOrder(ticketMaster);
-         if(existing >= 0)
-         {
-            AppendEstado(ticketMaster, "OPEN", 2, "OK_YA_EXISTE", IntegerToString(existing));
-            continue;
-         }
-
-         double lotsWorker = ComputeWorkerLots(symbol, lots);
-         int type = (orderTypeStr == "BUY" ? OP_BUY : OP_SELL);
-         double price = (type == OP_BUY ? Ask : Bid);
+         double lotsWorker = ComputeWorkerLots(sym, lots);
+         int cmd = (orderTypeStr == "BUY" ? OP_BUY : OP_SELL);
+         double price = (cmd == OP_BUY ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID));
          string commentStr = IntegerToString(ticketMaster);
 
-         ResetLastError();
-         int ticketNew = OrderSend(symbol, type, lotsWorker, price, InpSlippage, sl, tp, commentStr, ticketMaster, 0, clrNONE);
+         int ticket = OrderSend(sym, cmd, lotsWorker, price, InpSlippage, slVal, tpVal, commentStr, ticketMaster, 0, clrNONE);
 
-         if(ticketNew < 0)
+         if(ticket < 0)
          {
             int err = GetLastError();
             string errBase = "OrderSend failed: " + ErrorText(err);
             Notify("Ticket: " + IntegerToString(ticketMaster) + " - OPEN FALLO: " + errBase);
             AppendEstado(ticketMaster, "OPEN", 2, "ERR_" + IntegerToString(err), errBase);
-            AppendError(ticketMaster, ticketMaster, "OPEN", "ERR_SEND", err, 0, symbol, errBase);
+            AppendError(ticketMaster, ticketMaster, "OPEN", "ERR_SEND", err, 0, sym, errBase);
             continue;
          }
 
-         // OPEN OK
-         if(OrderSelect(ticketNew, SELECT_BY_TICKET))
-         {
-            OpenLogInfo log;
-            log.ticketMaster = ticketMaster;
-            log.ticketMasterSource = "MAGIC";
-            log.ticketWorker = ticketNew;
-            log.magicNumber  = ticketMaster;
-            log.symbol       = OrderSymbol();
-            log.orderType    = OrderType();
-            log.lots         = OrderLots();
-            log.openPrice    = OrderOpenPrice();
-            log.openTime     = OrderOpenTime();
-            log.sl           = OrderStopLoss();
-            log.tp           = OrderTakeProfit();
-
-            AddOpenLog(log);
-            DisplayOpenLogsInChart();
-
-            AppendEstado(ticketMaster, "OPEN", 2, "OK", IntegerToString(ticketNew));
-         }
-         else
-         {
-            AppendEstado(ticketMaster, "OPEN", 2, "OK", IntegerToString(ticketNew));
-         }
+         // OrderSend OK - guardar en memoria
+         AddOpenLog(ticketMaster, "MAGIC", ticket, ticketMaster, sym, cmd, lotsWorker, price, TimeCurrent(), slVal, tpVal);
+         DisplayOpenLogsInChart();
+         AppendEstado(ticketMaster, "OPEN", 2, "OK", IntegerToString(ticket));
       }
       else if(eventType == "MODIFY")
       {
          int idx = FindOpenLog(ticketMaster);
          if(idx < 0)
          {
-            AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
-            AppendError(ticketMaster, ticketMaster, "MODIFY", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs");
+            int histTicket = FindOrderInHistory(ticketMaster);
+            if(histTicket > 0)
+            {
+               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
+            }
+            else
+            {
+               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
+               AppendError(ticketMaster, ticketMaster, "MODIFY", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs");
+            }
             continue;
          }
 
-         int ticketWorker = g_openLogs[idx].ticketWorker;
-         string symLog = g_openLogs[idx].symbol;
-         int magicLog = g_openLogs[idx].magicNumber;
+         int ticketWorker = g_logTicketWorker[idx];
+         string symLog = g_logSymbol[idx];
+         int magicLog = g_logMagicNumber[idx];
 
-         if(!OrderSelect(ticketWorker, SELECT_BY_TICKET))
+         if(!OrderSelect(ticketWorker, SELECT_BY_TICKET, MODE_TRADES))
          {
-            RemoveOpenLog(ticketMaster);
-            DisplayOpenLogsInChart();
-            AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
-            AppendError(ticketMaster, magicLog, "MODIFY", "ERR_YA_CERRADA", 0, ticketWorker, symLog, "OrderSelect failed - orden no existe");
+            int histTicket = FindOrderInHistory(ticketMaster);
+            if(histTicket > 0)
+            {
+               RemoveOpenLog(ticketMaster);
+               DisplayOpenLogsInChart();
+               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
+            }
+            else
+            {
+               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
+               AppendError(ticketMaster, magicLog, "MODIFY", "ERR_NO_ENCONTRADA", 0, ticketWorker, symLog, "OrderSelect failed");
+            }
             RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             continue;
          }
 
-         double newSL = (sl > 0 ? sl : 0.0);
-         double newTP = (tp > 0 ? tp : 0.0);
+         double newSL = (slVal > 0 ? slVal : 0.0);
+         double newTP = (tpVal > 0 ? tpVal : 0.0);
+         double currentPrice = OrderOpenPrice();
 
-         ResetLastError();
-         bool ok = OrderModify(ticketWorker, OrderOpenPrice(), newSL, newTP, OrderExpiration(), clrNONE);
+         bool ok = OrderModify(ticketWorker, currentPrice, newSL, newTP, 0, clrNONE);
 
          if(ok)
          {
             UpdateOpenLogSLTP(ticketMaster, newSL, newTP);
             DisplayOpenLogsInChart();
-            string res = "MODIFY OK SL=" + DoubleToString(newSL, 2) + " TP=" + DoubleToString(newTP, 2);
             AppendEstado(ticketMaster, "MODIFY", 2, "OK", "");
             RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
          }
          else
          {
-            int historyTicket = FindOrderInHistory(ticketMaster);
-            if(historyTicket >= 0)
+            int histTicket = FindOrderInHistory(ticketMaster);
+            if(histTicket > 0)
             {
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
                AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
-               AppendError(ticketMaster, magicLog, "MODIFY", "ERR_YA_CERRADA", 0, ticketWorker, symLog, "OrderModify failed pero orden en historial");
                RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             }
             else
             {
                int err = GetLastError();
-               string errMsg = "OrderModify failed: " + ErrorText(err);
-               AppendError(ticketMaster, magicLog, "MODIFY", "RETRY", err, ticketWorker, symLog, errMsg);
+               string errTxt = "OrderModify failed: " + ErrorText(err);
+               AppendError(ticketMaster, magicLog, "MODIFY", "RETRY", err, ticketWorker, symLog, errTxt);
                
-               // Si es primer intento (estado != 1), marcar como en proceso
                if(estadoActual != 1)
                {
                   AppendEstado(ticketMaster, "MODIFY", 1, "RETRY", "ERR_" + IntegerToString(err));
                   if(!TicketInArray(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount))
                   {
-                     Notify("Ticket: " + IntegerToString(ticketMaster) + " - " + errMsg);
+                     Notify("Ticket: " + IntegerToString(ticketMaster) + " - " + errTxt);
                      AddTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
                   }
                }
@@ -1066,27 +996,27 @@ void ProcessQueue()
          int idx = FindOpenLog(ticketMaster);
          if(idx < 0)
          {
-            int historyTicket = FindOrderInHistory(ticketMaster);
-            if(historyTicket >= 0)
+            int histTicket = FindOrderInHistory(ticketMaster);
+            if(histTicket > 0)
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "OK_YA_CERRADA", "");
             }
             else
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "ERR_NO_ENCONTRADA", "");
-               AppendError(ticketMaster, ticketMaster, "CLOSE", "ERR_NO_ENCONTRADA", 0, 0, "", "Orden no encontrada en g_openLogs ni historial");
+               AppendError(ticketMaster, ticketMaster, "CLOSE", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs");
             }
             continue;
          }
 
-         int ticketWorker = g_openLogs[idx].ticketWorker;
-         string symLog = g_openLogs[idx].symbol;
-         int magicLog = g_openLogs[idx].magicNumber;
+         int ticketWorker = g_logTicketWorker[idx];
+         string symLog = g_logSymbol[idx];
+         int magicLog = g_logMagicNumber[idx];
 
-         if(!OrderSelect(ticketWorker, SELECT_BY_TICKET))
+         if(!OrderSelect(ticketWorker, SELECT_BY_TICKET, MODE_TRADES))
          {
-            int historyTicket = FindOrderInHistory(ticketMaster);
-            if(historyTicket >= 0)
+            int histTicket = FindOrderInHistory(ticketMaster);
+            if(histTicket > 0)
             {
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
@@ -1096,19 +1026,16 @@ void ProcessQueue()
             else
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "ERR_NO_ENCONTRADA", "");
-               AppendError(ticketMaster, magicLog, "CLOSE", "ERR_NO_ENCONTRADA", 0, ticketWorker, symLog, "OrderSelect failed y no en historial");
+               AppendError(ticketMaster, magicLog, "CLOSE", "ERR_NO_ENCONTRADA", 0, ticketWorker, symLog, "OrderSelect failed");
             }
             continue;
          }
 
-         RefreshRates();
-         int type = OrderType();
          double volume = OrderLots();
-         double closePrice = (type==OP_BUY ? Bid : Ask);
          double profitBefore = OrderProfit();
-         datetime closeTime = TimeCurrent();
+         int orderType = OrderType();
+         double closePrice = (orderType == OP_BUY ? MarketInfo(symLog, MODE_BID) : MarketInfo(symLog, MODE_ASK));
 
-         ResetLastError();
          bool ok = OrderClose(ticketWorker, volume, closePrice, InpSlippage, clrNONE);
 
          if(ok)
@@ -1120,8 +1047,8 @@ void ProcessQueue()
          }
          else
          {
-            int historyTicket = FindOrderInHistory(ticketMaster);
-            if(historyTicket >= 0)
+            int histTicket = FindOrderInHistory(ticketMaster);
+            if(histTicket > 0)
             {
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
@@ -1131,16 +1058,15 @@ void ProcessQueue()
             else
             {
                int err = GetLastError();
-               string errMsg = "OrderClose failed: " + ErrorText(err);
-               AppendError(ticketMaster, magicLog, "CLOSE", "RETRY_SEND", err, ticketWorker, symLog, errMsg);
+               string errTxt = "OrderClose failed: " + ErrorText(err);
+               AppendError(ticketMaster, magicLog, "CLOSE", "RETRY_SEND", err, ticketWorker, symLog, errTxt);
                
-               // Si es primer intento (estado != 1), marcar como en proceso
                if(estadoActual != 1)
                {
                   AppendEstado(ticketMaster, "CLOSE", 1, "RETRY", "ERR_" + IntegerToString(err));
                   if(!TicketInArray(IntegerToString(ticketMaster), g_notifCloseTickets, g_notifCloseCount))
                   {
-                     Notify("Ticket: " + IntegerToString(ticketMaster) + " - " + errMsg);
+                     Notify("Ticket: " + IntegerToString(ticketMaster) + " - " + errTxt);
                      AddTicket(IntegerToString(ticketMaster), g_notifCloseTickets, g_notifCloseCount);
                   }
                }
@@ -1148,10 +1074,4 @@ void ProcessQueue()
          }
       }
    }
-   
-   // NOTA: Ya NO hay RewriteQueue ni merge defensivo.
-   // La cola es append-only (Distribuidor) y los estados son append-only (Worker).
-   // La purga nocturna del Distribuidor limpiará ambos archivos.
 }
-
-

@@ -143,3 +143,4 @@ La fórmula exacta usa `floor()` que introduce una pequeña diferencia con la ap
 
 
 
+

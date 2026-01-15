@@ -11,6 +11,7 @@ spool_folder=PROD\Phoenix\V2\Spool
 # Lista de workers (una línea por worker)
 # Formato: worker_id=<numero_cuenta>|<symbol_origen>=<symbol_destino>|...
 worker_id=511029358|xauusd.s=xauusd
+worker_id=3037589|xauusd-std=GOLD
 
 
 # Intervalo de sondeo en segundos
