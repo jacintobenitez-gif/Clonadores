@@ -12,7 +12,7 @@
 
 // -------------------- Inputs --------------------
 input bool   InpFondeo        = true;
-input double InpLotMultiplier = 3.0;
+input double InpLotMultiplier = 1.0;
 input double InpFixedLots     = 0.10;  // (no se usa si InpFondeo=false, se mantiene por compatibilidad)
 input int    InpSlippage      = 30;    // puntos (compatibilidad con MT4)
 input int    InpMagicNumber   = 0;     // (compatibilidad; en V2 el magic es ticketMaster)
@@ -1052,52 +1052,67 @@ void ProcessQueue()
             continue;
          }
 
-         ulong posTicket = FindOpenPosition(ticketMaster);
-         if(posTicket > 0 && PositionSelectByTicket(posTicket))
-         {
-            OpenLogInfo log;
-            log.ticketMaster       = ticketMaster;
-            log.ticketMasterSource = "MAGIC";
-            log.ticketWorker       = posTicket;
-            log.magicNumber        = (long)ticketMaster;
-            log.symbol             = PositionGetString(POSITION_SYMBOL);
-            log.positionType       = PositionGetInteger(POSITION_TYPE);
-            log.lots               = PositionGetDouble(POSITION_VOLUME);
-            log.openPrice          = PositionGetDouble(POSITION_PRICE_OPEN);
-            log.openTime           = (datetime)PositionGetInteger(POSITION_TIME);
-            log.sl                 = PositionGetDouble(POSITION_SL);
-            log.tp                 = PositionGetDouble(POSITION_TP);
+         // OrderSend OK = orden ejecutada. Guardar directamente en memoria.
+         // res.order es el POSITION_TICKET que usaremos para MODIFY/CLOSE
+         OpenLogInfo log;
+         log.ticketMaster       = ticketMaster;
+         log.ticketMasterSource = "MAGIC";
+         log.ticketWorker       = res.order;  // POSITION_TICKET
+         log.magicNumber        = (long)ticketMaster;
+         log.symbol             = sym;
+         log.positionType       = (orderTypeStr == "BUY" ? POSITION_TYPE_BUY : POSITION_TYPE_SELL);
+         log.lots               = lotsWorker;
+         log.openPrice          = price;
+         log.openTime           = TimeCurrent();
+         log.sl                 = slVal;
+         log.tp                 = tpVal;
 
-            AddOpenLog(log);
-            DisplayOpenLogsInChart();
+         AddOpenLog(log);
+         DisplayOpenLogsInChart();
 
-            AppendEstado(ticketMaster, "OPEN", 2, "OK", LongToStr((long)posTicket));
-         }
-         else
-         {
-            AppendEstado(ticketMaster, "OPEN", 2, "OK", "");
-         }
+         AppendEstado(ticketMaster, "OPEN", 2, "OK", LongToStr((long)log.ticketWorker));
       }
       else if(eventType == "MODIFY")
       {
+         // Buscar en memoria (g_openLogs)
          int idx = FindOpenLog(ticketMaster);
          if(idx < 0)
          {
-            AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
-            AppendError(ticketMaster, ticketMaster, "MODIFY", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs");
+            // No está en memoria - verificar si ya cerrada en historial
+            ulong historyDeal = FindDealInHistory(ticketMaster);
+            if(historyDeal > 0)
+            {
+               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
+            }
+            else
+            {
+               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
+               AppendError(ticketMaster, ticketMaster, "MODIFY", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs");
+            }
             continue;
          }
 
+         // Obtener datos de memoria
          ulong ticketWorker = g_openLogs[idx].ticketWorker;
          string symLog = g_openLogs[idx].symbol;
          long magicLog = g_openLogs[idx].magicNumber;
 
+         // Seleccionar posición en MT5
          if(!PositionSelectByTicket(ticketWorker))
          {
-            RemoveOpenLog(ticketMaster);
-            DisplayOpenLogsInChart();
-            AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
-            AppendError(ticketMaster, (int)magicLog, "MODIFY", "ERR_YA_CERRADA", 0, ticketWorker, symLog, "PositionSelectByTicket failed - posicion no existe");
+            // Posición no existe en MT5 - verificar historial
+            ulong historyDeal = FindDealInHistory(ticketMaster);
+            if(historyDeal > 0)
+            {
+               RemoveOpenLog(ticketMaster);
+               DisplayOpenLogsInChart();
+               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
+            }
+            else
+            {
+               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
+               AppendError(ticketMaster, (int)magicLog, "MODIFY", "ERR_NO_ENCONTRADA", 0, ticketWorker, symLog, "PositionSelectByTicket failed");
+            }
             RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             continue;
          }
@@ -1148,9 +1163,11 @@ void ProcessQueue()
       }
       else if(eventType == "CLOSE")
       {
+         // Buscar en memoria (g_openLogs)
          int idx = FindOpenLog(ticketMaster);
          if(idx < 0)
          {
+            // No está en memoria - verificar si ya cerrada en historial
             ulong historyDeal = FindDealInHistory(ticketMaster);
             if(historyDeal > 0)
             {
@@ -1159,17 +1176,20 @@ void ProcessQueue()
             else
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "ERR_NO_ENCONTRADA", "");
-               AppendError(ticketMaster, ticketMaster, "CLOSE", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs ni historial");
+               AppendError(ticketMaster, ticketMaster, "CLOSE", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs");
             }
             continue;
          }
 
+         // Obtener datos de memoria
          ulong ticketWorker = g_openLogs[idx].ticketWorker;
          string symLog = g_openLogs[idx].symbol;
          long magicLog = g_openLogs[idx].magicNumber;
 
+         // Seleccionar posición en MT5
          if(!PositionSelectByTicket(ticketWorker))
          {
+            // Posición no existe en MT5 - verificar historial
             ulong historyDeal = FindDealInHistory(ticketMaster);
             if(historyDeal > 0)
             {
@@ -1181,7 +1201,7 @@ void ProcessQueue()
             else
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "ERR_NO_ENCONTRADA", "");
-               AppendError(ticketMaster, (int)magicLog, "CLOSE", "ERR_NO_ENCONTRADA", 0, ticketWorker, symLog, "PositionSelectByTicket failed y no en historial");
+               AppendError(ticketMaster, (int)magicLog, "CLOSE", "ERR_NO_ENCONTRADA", 0, ticketWorker, symLog, "PositionSelectByTicket failed");
             }
             continue;
          }
