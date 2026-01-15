@@ -492,7 +492,7 @@ void AppendEstado(int ticketMaster, string eventType, int estado, string resulta
    uchar utf8[];
    StringToUTF8Bytes(line, utf8);
    FileWriteArray(h, utf8);
-   uchar nl[] = {0x0A};
+   uchar nl[] = {0x0D, 0x0A};  // CRLF para Windows/Notepad
    FileWriteArray(h, nl);
    FileClose(h);
 }
@@ -534,7 +534,7 @@ void AppendError(int ticketMaster, int magicNumber, string eventType, string err
    uchar utf8[];
    StringToUTF8Bytes(line, utf8);
    FileWriteArray(h, utf8);
-   uchar nl[] = {0x0A};
+   uchar nl[] = {0x0D, 0x0A};  // CRLF para Windows/Notepad
    FileWriteArray(h, nl);
    FileClose(h);
    
