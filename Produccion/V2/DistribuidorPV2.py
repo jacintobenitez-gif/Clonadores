@@ -664,18 +664,21 @@ def purga_nocturna(config: Config) -> None:
        b. Renombrar estados_WORKER_XXX.csv -> estados_WORKER_XXX.csv.lck
        c. Leer ambos archivos .lck
        d. Construir mapa de estados
-       e. Filtrar cola: mantener solo comandos NO completados (estado != 2)
-       f. Filtrar estados: mantener solo estado != 2
-       g. Escribir archivos limpios
-       h. Borrar .lck
+       e. NUEVO: Guardar estados completados en historico_WORKER_XXX.csv
+       f. Filtrar cola: mantener solo comandos NO completados (estado != 2)
+       g. Filtrar estados: mantener solo estado != 2
+       h. Escribir archivos limpios
+       i. Borrar .lck
     """
     phoenix_dir = config.common_dir / "PROD" / "Phoenix" / "V2"
+    purge_timestamp = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
     
     print(f"[PURGA] Iniciando purga nocturna para {len(config.worker_ids)} workers...")
     
     for worker_id in config.worker_ids:
         cola_path = phoenix_dir / f"cola_WORKER_{worker_id}.csv"
         estados_path = phoenix_dir / f"estados_WORKER_{worker_id}.csv"
+        historico_path = phoenix_dir / f"historico_WORKER_{worker_id}.csv"
         cola_lck = phoenix_dir / f"cola_WORKER_{worker_id}.csv.lck"
         estados_lck = phoenix_dir / f"estados_WORKER_{worker_id}.csv.lck"
         
@@ -713,8 +716,9 @@ def purga_nocturna(config: Config) -> None:
                 except Exception as exc:
                     print(f"[PURGA][ERROR] Worker {worker_id}: Error leyendo cola: {exc}")
             
-            # 4. Leer estados y filtrar (mantener estado != 2)
+            # 4. Leer estados, filtrar y guardar completados en histórico
             estados_activos: List[str] = []
+            estados_historico: List[str] = []
             if estados_lck.exists():
                 try:
                     estados_content = estados_lck.read_text(encoding="utf-8", errors="replace")
@@ -728,13 +732,26 @@ def purga_nocturna(config: Config) -> None:
                                 estado = int(parts[2].strip())
                                 if estado != 2:  # No completado
                                     estados_activos.append(line_stripped)
+                                else:  # Completado -> guardar en histórico
+                                    # Formato: purge_date;linea_original
+                                    estados_historico.append(f"{purge_timestamp};{line_stripped}")
                             except ValueError:
                                 # Línea mal formada, mantener por seguridad
                                 estados_activos.append(line_stripped)
                 except Exception as exc:
                     print(f"[PURGA][ERROR] Worker {worker_id}: Error leyendo estados: {exc}")
             
-            # 5. Escribir archivos limpios
+            # 5. Append estados completados al archivo histórico
+            if estados_historico:
+                try:
+                    with open(historico_path, "a", encoding="utf-8", newline="") as f:
+                        for hist_line in estados_historico:
+                            f.write(hist_line + "\n")
+                    print(f"[PURGA] Worker {worker_id}: {len(estados_historico)} estados archivados en histórico")
+                except Exception as exc:
+                    print(f"[PURGA][ERROR] Worker {worker_id}: Error escribiendo histórico: {exc}")
+            
+            # 6. Escribir archivos limpios
             with open(cola_path, "w", encoding="utf-8", newline="") as f:
                 for cmd in comandos_pendientes:
                     f.write(cmd + "\n")
@@ -743,7 +760,7 @@ def purga_nocturna(config: Config) -> None:
                 for est in estados_activos:
                     f.write(est + "\n")
             
-            # 6. Desbloquear (borrar .lck)
+            # 7. Desbloquear (borrar .lck)
             if cola_lck.exists():
                 cola_lck.unlink()
             if estados_lck.exists():

@@ -17,7 +17,9 @@ input double InpFixedLots     = 0.10;  // (no se usa si InpFondeo=false, se mant
 input int    InpSlippage      = 30;    // puntos (compatibilidad con MT4)
 input int    InpMagicNumber   = 0;     // (compatibilidad; en V2 el magic es ticketMaster)
 input int    InpTimerSeconds  = 1;
-input int    InpSyncSeconds   = 10;    // cada N segundos recalcula memoria desde MT5
+// InpSyncSeconds ELIMINADO: El sync periódico causaba inconsistencias en g_openLogs.
+// Ahora g_openLogs se mantiene sincronizado fielmente con AddOpenLog/RemoveOpenLog en cada evento.
+// Solo se carga desde MT5 en OnInit() al arrancar.
 input int    InpThrottleMs    = 200;   // mínimo ms entre procesamientos de cola (OnTick reactivo)
 
 // -------------------- Paths (Common\Files) --------------------
@@ -25,8 +27,8 @@ string BASE_SUBDIR   = "PROD\\Phoenix\\V2";
 string g_workerId    = "";
 string g_queueFile   = "";
 string g_estadosFile = "";
+string g_erroresFile = "";  // Archivo de errores para trazabilidad
 
-datetime g_lastSyncTime = 0;
 uint     g_lastRunMs    = 0;   // Para throttle de OnTick
 
 // -------------------- Estados procesados (en memoria) --------------------
@@ -495,6 +497,52 @@ void AppendEstado(int ticketMaster, string eventType, int estado, string resulta
    FileClose(h);
 }
 
+// Escribe error a archivo de errores (append-only) para trazabilidad completa
+// Formato: timestamp;ticket_master;magic_number;event_type;error_code;mt5_error;ticketWorker;symbol;detalle
+void AppendError(int ticketMaster, int magicNumber, string eventType, string errorCode, int mt5Error, ulong ticketWorker, string symbol, string detalle)
+{
+   int h = FileOpen(g_erroresFile, FILE_BIN|FILE_READ|FILE_WRITE|FILE_COMMON|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+   {
+      // Crear archivo si no existe
+      h = FileOpen(g_erroresFile, FILE_BIN|FILE_WRITE|FILE_COMMON);
+   }
+   else
+   {
+      FileSeek(h, 0, SEEK_END);
+   }
+   
+   if(h == INVALID_HANDLE)
+   {
+      Print("ERROR: No se pudo abrir archivo de errores: ", g_erroresFile);
+      return;
+   }
+   
+   // Timestamp legible (formato: YYYY.MM.DD HH:MM:SS)
+   string timestamp = TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS);
+   
+   string line = timestamp + ";" +
+                 IntegerToString(ticketMaster) + ";" +
+                 IntegerToString(magicNumber) + ";" +
+                 eventType + ";" +
+                 errorCode + ";" +
+                 IntegerToString(mt5Error) + ";" +
+                 IntegerToString((long)ticketWorker) + ";" +
+                 symbol + ";" +
+                 detalle;
+   
+   uchar utf8[];
+   StringToUTF8Bytes(line, utf8);
+   FileWriteArray(h, utf8);
+   uchar nl[] = {0x0A};
+   FileWriteArray(h, nl);
+   FileClose(h);
+   
+   // También imprimir en log de MT5 para visibilidad inmediata
+   Print("[ERROR] ", eventType, " ticketMaster=", ticketMaster, " magic=", magicNumber, 
+         " err=", errorCode, " mt5=", mt5Error, " tw=", ticketWorker, " sym=", symbol, " | ", detalle);
+}
+
 // Carga estados desde archivo a memoria
 void CargarEstadosProcesados()
 {
@@ -869,6 +917,7 @@ int OnInit()
    g_workerId    = LongToStr((long)AccountInfoInteger(ACCOUNT_LOGIN));
    g_queueFile   = CommonRelative("cola_WORKER_" + g_workerId + ".csv");
    g_estadosFile = CommonRelative("estados_WORKER_" + g_workerId + ".csv");
+   g_erroresFile = CommonRelative("errores_WORKER_" + g_workerId + ".csv");
 
    if(!EnsureBaseFolder()) return INIT_FAILED;
 
@@ -914,14 +963,9 @@ void ProcessQueue()
       return;
    }
 
-   // Sync defensivo: evita "posiciones en memoria" fantasma (cierres manuales/SL/TP o eventos perdidos)
-   datetime now = TimeCurrent();
-   if(g_lastSyncTime == 0 || (InpSyncSeconds > 0 && (now - g_lastSyncTime) >= InpSyncSeconds))
-   {
-      LoadOpenPositionsFromMT5();
-      DisplayOpenLogsInChart();
-      g_lastSyncTime = now;
-   }
+   // NOTA: El sync periódico fue ELIMINADO. g_openLogs se mantiene sincronizado
+   // fielmente mediante AddOpenLog/RemoveOpenLog en cada OPEN/CLOSE procesado.
+   // Solo se carga desde MT5 en OnInit() al arrancar.
 
    // 2. Cargar estados procesados en memoria
    CargarEstadosProcesados();
@@ -964,9 +1008,10 @@ void ProcessQueue()
          if(!EnsureFillingMode(sym))
          {
             int errCode = GetLastError();
-            string msg = "Ticket: " + IntegerToString(ticketMaster) + " - OPEN FALLO: SymbolSelect (" + IntegerToString(errCode) + ") " + ErrorText(errCode);
-            Notify(msg);
+            string msg = "SymbolSelect failed: " + ErrorText(errCode);
+            Notify("Ticket: " + IntegerToString(ticketMaster) + " - OPEN FALLO: " + msg);
             AppendEstado(ticketMaster, "OPEN", 2, "ERR_SYMBOL", msg);
+            AppendError(ticketMaster, ticketMaster, "OPEN", "ERR_SYMBOL", errCode, 0, sym, msg);
             continue;
          }
 
@@ -984,9 +1029,10 @@ void ProcessQueue()
          if(!SymbolInfoTick(sym, tick))
          {
             int err = GetLastError();
-            string errBase = "ERROR: OPEN (SymbolInfoTick " + IntegerToString(err) + ") " + ErrorText(err);
-            Notify("Ticket: " + IntegerToString(ticketMaster) + " - " + errBase);
+            string errBase = "SymbolInfoTick failed: " + ErrorText(err);
+            Notify("Ticket: " + IntegerToString(ticketMaster) + " - OPEN FALLO: " + errBase);
             AppendEstado(ticketMaster, "OPEN", 2, "ERR_TICK", errBase);
+            AppendError(ticketMaster, ticketMaster, "OPEN", "ERR_TICK", err, 0, sym, errBase);
             continue;
          }
 
@@ -999,9 +1045,10 @@ void ProcessQueue()
          if(!ok || (res.retcode != TRADE_RETCODE_DONE && res.retcode != TRADE_RETCODE_PLACED))
          {
             int err = GetLastError();
-            string errBase = "ERROR: OPEN (" + IntegerToString(err) + ") " + ErrorText(err) + " retcode=" + IntegerToString((int)res.retcode);
-            Notify("Ticket: " + IntegerToString(ticketMaster) + " - " + errBase);
+            string errBase = "SendDeal failed: " + ErrorText(err) + " retcode=" + IntegerToString((int)res.retcode);
+            Notify("Ticket: " + IntegerToString(ticketMaster) + " - OPEN FALLO: " + errBase);
             AppendEstado(ticketMaster, "OPEN", 2, "ERR_" + IntegerToString(err), errBase);
+            AppendError(ticketMaster, ticketMaster, "OPEN", "ERR_SEND", err, 0, sym, errBase);
             continue;
          }
 
@@ -1037,17 +1084,20 @@ void ProcessQueue()
          if(idx < 0)
          {
             AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
+            AppendError(ticketMaster, ticketMaster, "MODIFY", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs");
             continue;
          }
 
          ulong ticketWorker = g_openLogs[idx].ticketWorker;
          string symLog = g_openLogs[idx].symbol;
+         long magicLog = g_openLogs[idx].magicNumber;
 
          if(!PositionSelectByTicket(ticketWorker))
          {
             RemoveOpenLog(ticketMaster);
             DisplayOpenLogsInChart();
             AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
+            AppendError(ticketMaster, (int)magicLog, "MODIFY", "ERR_YA_CERRADA", 0, ticketWorker, symLog, "PositionSelectByTicket failed - posicion no existe");
             RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             continue;
          }
@@ -1074,12 +1124,14 @@ void ProcessQueue()
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
                AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
+               AppendError(ticketMaster, (int)magicLog, "MODIFY", "ERR_YA_CERRADA", 0, ticketWorker, symLog, "SendSLTP failed pero posicion en historial");
                RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             }
             else
             {
                int err = GetLastError();
-               string errTxt = "MODIFY FALLO: " + FormatLastError("MODIFY") + " retcode=" + IntegerToString((int)res.retcode);
+               string errTxt = "SendSLTP failed: " + ErrorText(err) + " retcode=" + IntegerToString((int)res.retcode);
+               AppendError(ticketMaster, (int)magicLog, "MODIFY", "RETRY", err, ticketWorker, symLog, errTxt);
                
                // Si es primer intento (estado != 1), marcar como en proceso
                if(estadoActual != 1)
@@ -1107,12 +1159,14 @@ void ProcessQueue()
             else
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "ERR_NO_ENCONTRADA", "");
+               AppendError(ticketMaster, ticketMaster, "CLOSE", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs ni historial");
             }
             continue;
          }
 
          ulong ticketWorker = g_openLogs[idx].ticketWorker;
          string symLog = g_openLogs[idx].symbol;
+         long magicLog = g_openLogs[idx].magicNumber;
 
          if(!PositionSelectByTicket(ticketWorker))
          {
@@ -1127,6 +1181,7 @@ void ProcessQueue()
             else
             {
                AppendEstado(ticketMaster, "CLOSE", 2, "ERR_NO_ENCONTRADA", "");
+               AppendError(ticketMaster, (int)magicLog, "CLOSE", "ERR_NO_ENCONTRADA", 0, ticketWorker, symLog, "PositionSelectByTicket failed y no en historial");
             }
             continue;
          }
@@ -1139,7 +1194,8 @@ void ProcessQueue()
          if(!SymbolInfoTick(symLog, tick))
          {
             int err = GetLastError();
-            string errTxt = FormatLastError("CLOSE FALLO (SymbolInfoTick)");
+            string errTxt = "SymbolInfoTick failed: " + ErrorText(err);
+            AppendError(ticketMaster, (int)magicLog, "CLOSE", "RETRY_TICK", err, ticketWorker, symLog, errTxt);
             
             // Si es primer intento (estado != 1), marcar como en proceso
             if(estadoActual != 1)
@@ -1180,7 +1236,8 @@ void ProcessQueue()
             else
             {
                int err = GetLastError();
-               string errTxt = FormatLastError("CLOSE FALLO") + " retcode=" + IntegerToString((int)res.retcode);
+               string errTxt = "SendDeal(CLOSE) failed: " + ErrorText(err) + " retcode=" + IntegerToString((int)res.retcode);
+               AppendError(ticketMaster, (int)magicLog, "CLOSE", "RETRY_SEND", err, ticketWorker, symLog, errTxt);
                
                // Si es primer intento (estado != 1), marcar como en proceso
                if(estadoActual != 1)
