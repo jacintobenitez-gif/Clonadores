@@ -35,9 +35,6 @@ LOGS_BASE_PATH = Path(os.environ.get('APPDATA', '')) / "MetaQuotes" / "Terminal"
 # Intervalo de monitoreo (segundos)
 MONITOR_INTERVAL = 30
 
-# Umbral para detectar inactividad (segundos)
-INACTIVITY_THRESHOLD = 300  # 5 minutos
-
 # Archivo para guardar estado del monitor
 STATE_FILE = Path(__file__).parent / "monitor_state.json"
 
@@ -211,30 +208,6 @@ class LogMonitor:
         
         return alerts
     
-    def check_worker_activity(self, worker_id: str) -> list:
-        """Verifica que el worker esté activo"""
-        alerts = []
-        
-        if worker_id not in self.last_activity:
-            return alerts
-        
-        inactive_seconds = time.time() - self.last_activity[worker_id]
-        
-        if inactive_seconds > INACTIVITY_THRESHOLD:
-            alert_key = f"inactivity_{worker_id}_{int(self.last_activity[worker_id] / 300)}"
-            
-            if alert_key not in self.known_errors:
-                self.known_errors.add(alert_key)
-                
-                minutes = int(inactive_seconds / 60)
-                alerts.append({
-                    'severity': '🟡',
-                    'type': 'INACTIVITY',
-                    'worker': worker_id,
-                    'message': f"Sin actividad hace {minutes} minutos"
-                })
-        
-        return alerts
     
     def check_pending_tickets(self) -> list:
         """Verifica tickets del Master pendientes de procesar"""
@@ -277,7 +250,6 @@ class LogMonitor:
         for worker_id in workers:
             all_alerts.extend(self.check_errors_file(worker_id))
             all_alerts.extend(self.check_estados_file(worker_id))
-            all_alerts.extend(self.check_worker_activity(worker_id))
         
         all_alerts.extend(self.check_pending_tickets())
         
