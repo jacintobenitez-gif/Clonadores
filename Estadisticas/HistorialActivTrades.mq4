@@ -1,7 +1,8 @@
 //+------------------------------------------------------------------+
-//|                                                     historial.mq4 |
+//|                                         HistorialActivTrades.mq4  |
 //|  Lee todo el historial de operaciones de la cuenta y lo exporta   |
 //|  a un archivo .txt con retorno de carro Windows (\r\n)            |
+//|  Version para cuentas ActivTrades                                 |
 //+------------------------------------------------------------------+
 #property strict
 #property version   "1.00"
@@ -9,7 +10,7 @@
 
 // -------------------- Inputs --------------------
 input bool   InpUseCommonFiles = true;                // Escribir en Common\Files (recomendado para acceso externo)
-input string InpFileName       = "historial.txt";     // Nombre del archivo de salida
+input string InpFileName       = "historialActivTrades.txt";     // Nombre del archivo de salida
 input bool   InpIncludeHeader  = true;                // Incluir cabecera con nombres de columnas
 input string InpSeparator      = "|";                 // Separador de campos
 
@@ -159,8 +160,13 @@ void ExportHistory()
    int totalHistory = OrdersHistoryTotal();
    int ordersExported = 0;
    
-   Print("Iniciando exportación del historial...");
-   Print("Total de órdenes en historial: ", totalHistory);
+   Print("========================================");
+   Print("DIAGNOSTICO DE HISTORIAL");
+   Print("OrdersHistoryTotal() = ", totalHistory);
+   Print("Si este numero es bajo, ve a Historial de Cuenta");
+   Print("y selecciona 'Todo el historial' (All History)");
+   Print("========================================");
+   Print("Iniciando exportacion del historial...");
    
    // Recorrer todas las órdenes del historial
    for(int i = 0; i < totalHistory; i++)
