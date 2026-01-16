@@ -35,6 +35,9 @@ LOGS_BASE_PATH = Path(os.environ.get('APPDATA', '')) / "MetaQuotes" / "Terminal"
 # Intervalo de monitoreo (segundos)
 MONITOR_INTERVAL = 30
 
+# Hora del resumen diario (formato 24h)
+DAILY_SUMMARY_HOUR = 8  # 08:00
+
 # Archivo para guardar estado del monitor
 STATE_FILE = Path(__file__).parent / "monitor_state.json"
 
@@ -99,6 +102,15 @@ class LogMonitor:
         self.last_activity = {}    # Última actividad por worker
         self.last_file_sizes = {}  # Tamaños de archivo conocidos
         self.startup_time = time.time()
+        
+        # Estadísticas para resumen diario
+        self.stats = {
+            'errors_today': 0,
+            'open_failed': 0,
+            'modify_failed': 0,
+            'close_failed': 0,
+        }
+        self.last_summary_date = None
         
     def check_errors_file(self, worker_id: str) -> list:
         """Revisa el archivo de errores de un worker"""
@@ -258,10 +270,90 @@ class LogMonitor:
     def format_alert(self, alert: dict) -> str:
         """Formatea una alerta para Telegram"""
         return (
-            f"{alert['severity']} **{alert['type']}**\n"
+            f"{alert['severity']} {alert['type']}\n"
             f"Worker: {alert['worker']}\n"
             f"{alert['message']}"
         )
+    
+    def update_stats(self, alert: dict):
+        """Actualiza las estadísticas con una nueva alerta"""
+        self.stats['errors_today'] += 1
+        
+        alert_type = alert.get('type', '')
+        if 'OPEN' in alert_type:
+            self.stats['open_failed'] += 1
+        elif 'MODIFY' in alert_type:
+            self.stats['modify_failed'] += 1
+        elif 'CLOSE' in alert_type:
+            self.stats['close_failed'] += 1
+    
+    def reset_stats(self):
+        """Reinicia las estadísticas diarias"""
+        self.stats = {
+            'errors_today': 0,
+            'open_failed': 0,
+            'modify_failed': 0,
+            'close_failed': 0,
+        }
+    
+    def should_send_summary(self) -> bool:
+        """Verifica si es hora de enviar el resumen diario"""
+        now = datetime.now()
+        today = now.date()
+        
+        # Si ya enviamos resumen hoy, no enviar
+        if self.last_summary_date == today:
+            return False
+        
+        # Enviar si es la hora configurada (o después, si acabamos de arrancar)
+        if now.hour >= DAILY_SUMMARY_HOUR:
+            return True
+        
+        return False
+    
+    def send_daily_summary(self):
+        """Envía el resumen diario"""
+        workers = self.discover_workers()
+        
+        # Determinar estado general
+        if self.stats['errors_today'] == 0:
+            status_icon = "✅"
+            status_text = "Sin errores"
+        elif self.stats['errors_today'] < 5:
+            status_icon = "⚠️"
+            status_text = "Algunos errores"
+        else:
+            status_icon = "🔴"
+            status_text = "Muchos errores"
+        
+        # Calcular tiempo activo
+        uptime_seconds = time.time() - self.startup_time
+        uptime_hours = int(uptime_seconds / 3600)
+        uptime_mins = int((uptime_seconds % 3600) / 60)
+        
+        message = (
+            f"📊 OmegaInversiones - Resumen Diario\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{status_icon} Estado: {status_text}\n"
+            f"⏱️ Uptime: {uptime_hours}h {uptime_mins}m\n"
+            f"👷 Workers: {', '.join(workers) if workers else 'Ninguno'}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📈 Errores últimas 24h:\n"
+            f"   • Total: {self.stats['errors_today']}\n"
+            f"   • OPEN: {self.stats['open_failed']}\n"
+            f"   • MODIFY: {self.stats['modify_failed']}\n"
+            f"   • CLOSE: {self.stats['close_failed']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        )
+        
+        send_telegram(message)
+        
+        # Marcar como enviado y resetear stats
+        self.last_summary_date = datetime.now().date()
+        self.reset_stats()
+        
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Resumen diario enviado")
     
     def run(self):
         """Loop principal del monitor"""
@@ -282,12 +374,18 @@ class LogMonitor:
         
         while True:
             try:
+                # Verificar si es hora del resumen diario
+                if self.should_send_summary():
+                    self.send_daily_summary()
+                
+                # Verificar errores
                 alerts = self.run_check()
                 
                 for alert in alerts:
                     msg = self.format_alert(alert)
                     print(f"[ALERT] {msg}")
                     send_telegram(msg)
+                    self.update_stats(alert)
                 
                 if not alerts:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] OK - Sin alertas")
@@ -296,7 +394,7 @@ class LogMonitor:
                 
             except KeyboardInterrupt:
                 print("\n[INFO] Monitor detenido por usuario")
-                send_telegram("🔴 **OmegaInversiones Monitor detenido**")
+                send_telegram("🔴 OmegaInversiones Monitor detenido")
                 break
             except Exception as e:
                 print(f"[ERROR] {e}")
@@ -309,8 +407,15 @@ class LogMonitor:
 def main():
     if "--test" in sys.argv:
         print("Enviando mensaje de prueba...")
-        success = send_telegram("🧪 **Test de OmegaInversiones Monitor**\n\nSi ves este mensaje, el sistema funciona correctamente.")
+        success = send_telegram("🧪 Test de OmegaInversiones Monitor\n\nSi ves este mensaje, el sistema funciona correctamente.")
         print("OK" if success else "FALLO")
+        return
+    
+    if "--summary" in sys.argv:
+        print("Enviando resumen de prueba...")
+        monitor = LogMonitor()
+        monitor.send_daily_summary()
+        print("OK")
         return
     
     if "--status" in sys.argv:
