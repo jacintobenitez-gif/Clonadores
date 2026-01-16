@@ -540,7 +540,7 @@ void ReconstruirReintentosDesdeEstados()
             
             if(evtType == "CLOSE")
                AddTicket(ticketStr, g_notifCloseTickets, g_notifCloseCount);
-            else if(evtType == "MODIFY")
+            else if(StringFind(evtType, "MODIFY") == 0)  // Empieza con "MODIFY" (incluye MODIFY_sl_tp)
                AddTicket(ticketStr, g_notifModifyTickets, g_notifModifyCount);
          }
       }
@@ -872,7 +872,14 @@ void ProcessQueue()
       if(!ParseLine(lines[i], eventType, ticketMaster, orderTypeStr, lots, sym, slVal, tpVal))
          continue;
 
-      string key = IntegerToString(ticketMaster) + "_" + eventType;
+      // Construir clave según tipo de evento
+      // Para MODIFY: incluir valores SL/TP para distinguir MODIFYs múltiples del mismo ticket
+      string key;
+      if(eventType == "MODIFY")
+         key = IntegerToString(ticketMaster) + "_MODIFY_" + DoubleToString(slVal, 2) + "_" + DoubleToString(tpVal, 2);
+      else
+         key = IntegerToString(ticketMaster) + "_" + eventType;
+      
       int estadoActual = FindEstado(key);
 
       if(estadoActual == 2)
@@ -912,17 +919,20 @@ void ProcessQueue()
       }
       else if(eventType == "MODIFY")
       {
+         // EventType extendido para distinguir MODIFYs múltiples del mismo ticket
+         string modifyEventType = "MODIFY_" + DoubleToString(slVal, 2) + "_" + DoubleToString(tpVal, 2);
+         
          int idx = FindOpenLog(ticketMaster);
          if(idx < 0)
          {
             int histTicket = FindOrderInHistory(ticketMaster);
             if(histTicket > 0)
             {
-               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
+               AppendEstado(ticketMaster, modifyEventType, 2, "ERR_YA_CERRADA", "");
             }
             else
             {
-               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
+               AppendEstado(ticketMaster, modifyEventType, 2, "ERR_NO_ENCONTRADA", "");
                AppendError(ticketMaster, ticketMaster, "MODIFY", "ERR_NO_ENCONTRADA", 0, 0, "", "Posicion no encontrada en g_openLogs");
             }
             continue;
@@ -939,11 +949,11 @@ void ProcessQueue()
             {
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
-               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
+               AppendEstado(ticketMaster, modifyEventType, 2, "ERR_YA_CERRADA", "");
             }
             else
             {
-               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_NO_ENCONTRADA", "");
+               AppendEstado(ticketMaster, modifyEventType, 2, "ERR_NO_ENCONTRADA", "");
                AppendError(ticketMaster, magicLog, "MODIFY", "ERR_NO_ENCONTRADA", 0, ticketWorker, symLog, "OrderSelect failed");
             }
             RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
@@ -960,7 +970,7 @@ void ProcessQueue()
          {
             UpdateOpenLogSLTP(ticketMaster, newSL, newTP);
             DisplayOpenLogsInChart();
-            AppendEstado(ticketMaster, "MODIFY", 2, "OK", "");
+            AppendEstado(ticketMaster, modifyEventType, 2, "OK", "");
             RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
          }
          else
@@ -970,7 +980,7 @@ void ProcessQueue()
             {
                RemoveOpenLog(ticketMaster);
                DisplayOpenLogsInChart();
-               AppendEstado(ticketMaster, "MODIFY", 2, "ERR_YA_CERRADA", "");
+               AppendEstado(ticketMaster, modifyEventType, 2, "ERR_YA_CERRADA", "");
                RemoveTicket(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount);
             }
             else
@@ -981,7 +991,7 @@ void ProcessQueue()
                
                if(estadoActual != 1)
                {
-                  AppendEstado(ticketMaster, "MODIFY", 1, "RETRY", "ERR_" + IntegerToString(err));
+                  AppendEstado(ticketMaster, modifyEventType, 1, "RETRY", "ERR_" + IntegerToString(err));
                   if(!TicketInArray(IntegerToString(ticketMaster), g_notifModifyTickets, g_notifModifyCount))
                   {
                      Notify("Ticket: " + IntegerToString(ticketMaster) + " - " + errTxt);
