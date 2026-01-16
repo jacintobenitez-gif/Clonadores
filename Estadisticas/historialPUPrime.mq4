@@ -8,13 +8,17 @@
 #property description "Exporta historial completo de operaciones a fichero TXT"
 
 // -------------------- Inputs --------------------
-input bool   InpUseCommonFiles = false;               // Escribir en Common\Files (si false, usa MQL4\Files)
+input bool   InpUseCommonFiles = true;                // Escribir en Common\Files (recomendado para acceso externo)
 input string InpFileName       = "historial.txt";     // Nombre del archivo de salida
 input bool   InpIncludeHeader  = true;                // Incluir cabecera con nombres de columnas
 input string InpSeparator      = "|";                 // Separador de campos
 
 // -------------------- Helpers --------------------
-string OrderTypeToString(int type)
+// Tipos adicionales de MT4 (no definidos como constantes)
+#define OP_BALANCE 6
+#define OP_CREDIT  7
+
+string OrderTypeToString(int type, double profit)
 {
    switch(type)
    {
@@ -24,6 +28,12 @@ string OrderTypeToString(int type)
       case OP_SELLLIMIT: return "SELL_LIMIT";
       case OP_BUYSTOP:   return "BUY_STOP";
       case OP_SELLSTOP:  return "SELL_STOP";
+      case OP_BALANCE:   
+         // Deposito si profit > 0, Retirada si profit < 0
+         if(profit > 0) return "DEPOSIT";
+         if(profit < 0) return "WITHDRAWAL";
+         return "BALANCE";
+      case OP_CREDIT:    return "CREDIT";
       default:           return "UNKNOWN";
    }
 }
@@ -103,7 +113,7 @@ string BuildOrderLine()
    
    string line = IntegerToString(ticket) + sep +
                  symbol + sep +
-                 OrderTypeToString(type) + sep +
+                 OrderTypeToString(type, profit) + sep +
                  DoubleToString(lots, 2) + sep +
                  DoubleToString(openPrice, digits) + sep +
                  DoubleToString(closePrice, digits) + sep +

@@ -98,9 +98,14 @@ def _guess_delimiter_and_read_txt(path: Path) -> pd.DataFrame:
     sample = "\n".join(raw[header_idx:header_idx + 20])
     for sep in ["\t", ";", ",", "|"]:
         try:
-            df = pd.read_csv(path, sep=sep, engine="python", skiprows=header_idx)
-            if df.shape[1] >= 4 and any(col.upper() == "TYPE" for col in df.columns):
-                return df
+            # Intentar con diferentes codificaciones
+            for encoding in ["utf-8", "latin-1", "cp1252"]:
+                try:
+                    df = pd.read_csv(path, sep=sep, engine="python", skiprows=header_idx, encoding=encoding)
+                    if df.shape[1] >= 4 and any(col.upper() == "TYPE" for col in df.columns):
+                        return df
+                except UnicodeDecodeError:
+                    continue
         except Exception:
             pass
 
@@ -258,13 +263,14 @@ class Summary:
     injection_needed_vs_contributed: float
 
 
-def compute_summary(df_std: pd.DataFrame, exclude_type: str, target_daily: float) -> Summary:
-    # Deposits / aportaciones
-    is_deposit = df_std["TYPE"].astype(str).str.upper().eq(exclude_type.upper())
+def compute_summary(df_std: pd.DataFrame, exclude_types: str, target_daily: float, initial_capital: float = 0.0) -> Summary:
+    # Deposits / aportaciones (puede ser una lista separada por comas: "DEPOSIT,CREDIT")
+    exclude_list = [t.strip().upper() for t in exclude_types.split(",")]
+    is_deposit = df_std["TYPE"].astype(str).str.upper().isin(exclude_list)
     deposits = df_std[is_deposit].copy()
-    # Un depósito suele ser positivo; si hubiera negativos (retiradas), también los contaríamos.
-    deposits_by_day = deposits.groupby("DATE")["AMOUNT"].sum().sort_index()
-    capital_contributed = float(deposits["AMOUNT"].sum())
+    # Un deposito suele ser positivo; si hubiera negativos (retiradas), tambien los contariamos.
+    deposits_by_day = deposits.groupby("DATE")["AMOUNT"].sum().sort_index() if len(deposits) > 0 else pd.Series(dtype=float)
+    capital_contributed = float(deposits["AMOUNT"].sum()) if len(deposits) > 0 else initial_capital
 
     # Trades (excluyendo UNKNOWN)
     trades = df_std[~is_deposit].copy()
@@ -284,12 +290,12 @@ def compute_summary(df_std: pd.DataFrame, exclude_type: str, target_daily: float
         best_day = (date.today(), 0.0)
         worst_day = (date.today(), 0.0)
 
-    # Reconstrucción de balance diario (balance inicial 0)
+    # Reconstruccion de balance diario (balance inicial = capital_contributed o initial_capital)
     all_days = sorted(set(deposits_by_day.index).union(set(pnl_by_day.index)))
-    bal = 0.0
+    bal = initial_capital if len(deposits) == 0 else 0.0
     balance_start = {}
     for d in all_days:
-        dep = float(deposits_by_day.get(d, 0.0))
+        dep = float(deposits_by_day.get(d, 0.0)) if len(deposits_by_day) > 0 else 0.0
         pnl = float(pnl_by_day.get(d, 0.0))
         bal_start = bal + dep
         balance_start[d] = bal_start
@@ -325,8 +331,8 @@ def compute_summary(df_std: pd.DataFrame, exclude_type: str, target_daily: float
 
 def fmt_eur(x: float) -> str:
     if x == float("inf"):
-        return "∞"
-    return f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+        return "INF"
+    return f"{x:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def get_mt4_common_files_path() -> Path:
@@ -356,8 +362,9 @@ def main():
     ap = argparse.ArgumentParser(description="Analiza historial (txt/pdf) y calcula PnL diario excluyendo aportaciones UNKNOWN.")
     ap.add_argument("file", type=str, nargs="?", default=None, 
                     help="Ruta a historial.txt o historial.pdf (default: busca en Common/Files de MT4 o carpeta local)")
-    ap.add_argument("--exclude-type", type=str, default="UNKNOWN", help="Valor de TYPE que se considera aportación (default: UNKNOWN)")
-    ap.add_argument("--target", type=float, default=320.0, help="Objetivo de media diaria (EUR/día) para calcular capital necesario (default: 320)")
+    ap.add_argument("--exclude-type", type=str, default="DEPOSIT,CREDIT", help="Valores de TYPE que se consideran aportacion, separados por coma (default: DEPOSIT,CREDIT)")
+    ap.add_argument("--target", type=float, default=320.0, help="Objetivo de media diaria (EUR/dia) para calcular capital necesario (default: 320)")
+    ap.add_argument("--capital", type=float, default=0.0, help="Capital inicial de la cuenta (si no hay depositos en historial)")
     args = ap.parse_args()
 
     # Determinar qué archivo usar
@@ -381,11 +388,11 @@ def main():
     if df.empty:
         raise SystemExit("No pude extraer filas válidas (DATE) del fichero. Revisa formato o pásame otro export.")
 
-    summ = compute_summary(df, exclude_type=args.exclude_type, target_daily=args.target)
+    summ = compute_summary(df, exclude_types=args.exclude_type, target_daily=args.target, initial_capital=args.capital)
 
     print("\n=== RESUMEN ===")
     print(f"Fichero: {path.name}")
-    print(f"Aportaciones (TYPE={args.exclude_type}): {fmt_eur(summ.capital_contributed)}")
+    print(f"Aportaciones (TYPE in [{args.exclude_type}]): {fmt_eur(summ.capital_contributed)}")
     print(f"PnL neto total (sin aportaciones): {fmt_eur(summ.net_total)}")
     print(f"Días con trading: {summ.trade_days}")
     print(f"Media diaria (solo días con trading): {fmt_eur(summ.avg_net_per_trade_day)}")
