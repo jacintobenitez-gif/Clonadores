@@ -109,8 +109,12 @@ class LogMonitor:
             'open_failed': 0,
             'modify_failed': 0,
             'close_failed': 0,
+            'open_ok': 0,
+            'modify_ok': 0,
+            'close_ok': 0,
         }
         self.last_summary_date = None
+        self.known_success = set()  # Éxitos ya contabilizados
         
     def check_errors_file(self, worker_id: str) -> list:
         """Revisa el archivo de errores de un worker"""
@@ -217,6 +221,20 @@ class LogMonitor:
                             'worker': worker_id,
                             'message': message
                         })
+            
+            # Contar operaciones exitosas (OK)
+            elif resultado == "OK" or resultado.startswith("OK_"):
+                success_key = f"ok_{worker_id}_{ticket}_{event_type}"
+                
+                if success_key not in self.known_success:
+                    self.known_success.add(success_key)
+                    
+                    if event_base == "OPEN":
+                        self.stats['open_ok'] += 1
+                    elif event_base == "MODIFY":
+                        self.stats['modify_ok'] += 1
+                    elif event_base == "CLOSE":
+                        self.stats['close_ok'] += 1
         
         return alerts
     
@@ -294,7 +312,11 @@ class LogMonitor:
             'open_failed': 0,
             'modify_failed': 0,
             'close_failed': 0,
+            'open_ok': 0,
+            'modify_ok': 0,
+            'close_ok': 0,
         }
+        self.known_success.clear()
     
     def should_send_summary(self) -> bool:
         """Verifica si es hora de enviar el resumen diario"""
@@ -331,6 +353,9 @@ class LogMonitor:
         uptime_hours = int(uptime_seconds / 3600)
         uptime_mins = int((uptime_seconds % 3600) / 60)
         
+        # Calcular totales
+        total_ops = self.stats['open_ok'] + self.stats['modify_ok'] + self.stats['close_ok']
+        
         message = (
             f"📊 OmegaInversiones - Resumen Diario\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -338,11 +363,17 @@ class LogMonitor:
             f"⏱️ Uptime: {uptime_hours}h {uptime_mins}m\n"
             f"👷 Workers: {', '.join(workers) if workers else 'Ninguno'}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📈 Errores últimas 24h:\n"
-            f"   • Total: {self.stats['errors_today']}\n"
+            f"✅ Operaciones exitosas:\n"
+            f"   • OPEN: {self.stats['open_ok']}\n"
+            f"   • MODIFY: {self.stats['modify_ok']}\n"
+            f"   • CLOSE: {self.stats['close_ok']}\n"
+            f"   • Total: {total_ops}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"❌ Errores:\n"
             f"   • OPEN: {self.stats['open_failed']}\n"
             f"   • MODIFY: {self.stats['modify_failed']}\n"
             f"   • CLOSE: {self.stats['close_failed']}\n"
+            f"   • Total: {self.stats['errors_today']}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {datetime.now().strftime('%d/%m/%Y %H:%M')}"
         )
