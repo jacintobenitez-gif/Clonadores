@@ -38,6 +38,10 @@ MONITOR_INTERVAL = 30
 # Hora del resumen diario (formato 24h)
 DAILY_SUMMARY_HOUR = 8  # 08:00
 
+# Horas para reportes horarios (de 8:00 a 20:00)
+HOURLY_REPORT_START = 8
+HOURLY_REPORT_END = 20
+
 # Archivo para guardar estado del monitor
 STATE_FILE = Path(__file__).parent / "monitor_state.json"
 
@@ -114,6 +118,7 @@ class LogMonitor:
             'close_ok': 0,
         }
         self.last_summary_date = None
+        self.last_hourly_report = None  # Última hora en que se envió reporte horario
         self.known_success = set()  # Éxitos ya contabilizados
         
     def check_errors_file(self, worker_id: str) -> list:
@@ -333,6 +338,206 @@ class LogMonitor:
         
         return False
     
+    def get_worker_stats_from_historico(self, worker_id: str) -> dict:
+        """Lee el histórico del worker y calcula estadísticas del día"""
+        stats = {
+            'open_ok': 0,
+            'modify_ok': 0,
+            'close_ok': 0,
+            'open_err': 0,
+            'modify_err': 0,
+            'close_err': 0,
+            'profit_gained': 0.0,
+            'profit_lost': 0.0,
+            'trades_won': 0,
+            'trades_lost': 0,
+        }
+        
+        filepath = LOGS_BASE_PATH / f"historico_WORKER_{worker_id}.csv"
+        if not filepath.exists():
+            return stats
+        
+        today = datetime.now().date()
+        rows = read_csv_file(filepath)
+        
+        for row in rows:
+            if len(row) < 5:
+                continue
+            
+            # Formato: fecha;ticket;tipo;intentos;timestamp;resultado;profit
+            try:
+                fecha_str = row[0].split()[0]  # "2026.01.17" -> solo fecha
+                fecha = datetime.strptime(fecha_str, "%Y.%m.%d").date()
+            except:
+                continue
+            
+            # Solo contar operaciones de hoy
+            if fecha != today:
+                continue
+            
+            event_type = row[2] if len(row) > 2 else ""
+            resultado = row[5] if len(row) > 5 else ""
+            profit_str = row[6] if len(row) > 6 else ""
+            
+            # Contar operaciones
+            if resultado == "OK" or resultado.startswith("OK_"):
+                if event_type == "OPEN":
+                    stats['open_ok'] += 1
+                elif event_type == "MODIFY":
+                    stats['modify_ok'] += 1
+                elif event_type == "CLOSE":
+                    stats['close_ok'] += 1
+                    # Extraer profit si está disponible
+                    if profit_str:
+                        try:
+                            profit = float(profit_str)
+                            if profit >= 0:
+                                stats['profit_gained'] += profit
+                                stats['trades_won'] += 1
+                            else:
+                                stats['profit_lost'] += abs(profit)
+                                stats['trades_lost'] += 1
+                        except ValueError:
+                            pass
+            elif resultado.startswith("ERR_"):
+                if event_type == "OPEN":
+                    stats['open_err'] += 1
+                elif event_type == "MODIFY":
+                    stats['modify_err'] += 1
+                elif event_type == "CLOSE":
+                    stats['close_err'] += 1
+        
+        return stats
+    
+    def get_worker_stats_from_estados(self, worker_id: str) -> dict:
+        """Obtiene estadísticas del día desde el archivo de estados"""
+        stats = {
+            'open_ok': 0,
+            'modify_ok': 0,
+            'close_ok': 0,
+            'open_err': 0,
+            'modify_err': 0,
+            'close_err': 0,
+        }
+        
+        filepath = LOGS_BASE_PATH / f"estados_WORKER_{worker_id}.csv"
+        if not filepath.exists():
+            return stats
+        
+        today = datetime.now().strftime("%Y.%m.%d")
+        rows = read_csv_file(filepath)
+        
+        for row in rows:
+            if len(row) < 5:
+                continue
+            
+            # Solo contar si tiene fecha de hoy (algunos formatos pueden variar)
+            event_type = row[1] if len(row) > 1 else ""
+            resultado = row[4] if len(row) > 4 else ""
+            
+            event_base = event_type.split("_")[0] if "_" in event_type else event_type
+            
+            if resultado == "OK" or resultado.startswith("OK_"):
+                if event_base == "OPEN":
+                    stats['open_ok'] += 1
+                elif event_base == "MODIFY":
+                    stats['modify_ok'] += 1
+                elif event_base == "CLOSE":
+                    stats['close_ok'] += 1
+            elif resultado.startswith("ERR_"):
+                if event_base == "OPEN":
+                    stats['open_err'] += 1
+                elif event_base == "MODIFY":
+                    stats['modify_err'] += 1
+                elif event_base == "CLOSE":
+                    stats['close_err'] += 1
+        
+        return stats
+    
+    def should_send_hourly_report(self) -> bool:
+        """Verifica si es hora de enviar reporte horario"""
+        now = datetime.now()
+        current_hour = now.hour
+        
+        # Solo entre las horas configuradas
+        if current_hour < HOURLY_REPORT_START or current_hour > HOURLY_REPORT_END:
+            return False
+        
+        # No enviar si ya enviamos esta hora
+        current_hour_key = f"{now.date()}_{current_hour}"
+        if self.last_hourly_report == current_hour_key:
+            return False
+        
+        # Enviar solo en los primeros minutos de la hora (0-5)
+        if now.minute > 5:
+            return False
+        
+        return True
+    
+    def send_hourly_report(self):
+        """Envía el reporte horario con desglose por worker"""
+        workers = self.discover_workers()
+        now = datetime.now()
+        
+        # Construir mensaje
+        lines = [
+            f"📊 OmegaInversiones - Reporte Horario",
+            f"━━━━━━━━━━━━━━━━━━━━━",
+            f"🕐 {now.strftime('%d/%m/%Y %H:%M')}",
+            ""
+        ]
+        
+        total_gained = 0.0
+        total_lost = 0.0
+        
+        for worker_id in sorted(workers):
+            # Intentar obtener stats del histórico (tiene profit)
+            stats = self.get_worker_stats_from_historico(worker_id)
+            
+            # Si no hay historico, usar estados
+            if stats['open_ok'] == 0 and stats['close_ok'] == 0:
+                stats = self.get_worker_stats_from_estados(worker_id)
+            
+            total_ok = stats['open_ok'] + stats['modify_ok'] + stats['close_ok']
+            total_err = stats.get('open_err', 0) + stats.get('modify_err', 0) + stats.get('close_err', 0)
+            
+            lines.append(f"👷 Worker {worker_id}")
+            lines.append(f"   ✅ OPEN: {stats['open_ok']} | MODIFY: {stats['modify_ok']} | CLOSE: {stats['close_ok']}")
+            lines.append(f"   ❌ Errores: {total_err}")
+            
+            # Datos económicos (solo si hay historico con profit)
+            gained = stats.get('profit_gained', 0)
+            lost = stats.get('profit_lost', 0)
+            balance = gained - lost
+            trades_won = stats.get('trades_won', 0)
+            trades_lost = stats.get('trades_lost', 0)
+            
+            if gained > 0 or lost > 0:
+                balance_sign = "+" if balance >= 0 else ""
+                lines.append(f"   💰 Balance: ${gained:.2f} - ${lost:.2f} = {balance_sign}${balance:.2f}")
+                lines.append(f"   📈 Ganadas: {trades_won} | 📉 Perdidas: {trades_lost}")
+            else:
+                lines.append(f"   💰 Balance: Sin datos económicos")
+            
+            lines.append("")
+            
+            total_gained += gained
+            total_lost += lost
+        
+        # Total general
+        total_balance = total_gained - total_lost
+        total_sign = "+" if total_balance >= 0 else ""
+        
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"💵 Total día: ${total_gained:.2f} - ${total_lost:.2f} = {total_sign}${total_balance:.2f}")
+        
+        message = "\n".join(lines)
+        send_telegram(message)
+        
+        # Marcar como enviado
+        self.last_hourly_report = f"{now.date()}_{now.hour}"
+        print(f"[{now.strftime('%H:%M:%S')}] Reporte horario enviado")
+    
     def send_daily_summary(self):
         """Envía el resumen diario"""
         workers = self.discover_workers()
@@ -405,9 +610,13 @@ class LogMonitor:
         
         while True:
             try:
-                # Verificar si es hora del resumen diario
+                # Verificar si es hora del resumen diario (8:00)
                 if self.should_send_summary():
                     self.send_daily_summary()
+                
+                # Verificar si es hora del reporte horario (8:00-20:00)
+                if self.should_send_hourly_report():
+                    self.send_hourly_report()
                 
                 # Verificar errores
                 alerts = self.run_check()
@@ -446,6 +655,13 @@ def main():
         print("Enviando resumen de prueba...")
         monitor = LogMonitor()
         monitor.send_daily_summary()
+        print("OK")
+        return
+    
+    if "--hourly" in sys.argv:
+        print("Enviando reporte horario de prueba...")
+        monitor = LogMonitor()
+        monitor.send_hourly_report()
         print("OK")
         return
     
